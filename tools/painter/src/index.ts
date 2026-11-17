@@ -19,6 +19,7 @@ import { fail, positiveInt } from "./cli";
 import { paintScoped } from "./paint";
 import { runPool } from "./pool";
 import { PROMPT_HASH } from "./prompt";
+import { thinkingLog } from "./thinking-log";
 
 const { values: args } = parseArgs({
   options: {
@@ -74,6 +75,7 @@ if (scoped) {
   console.log(
     `Painting ${url.pathname.split("/")[3]}: ${args.random ? "random strokes" : `${model}, effort ${effort}, a new conversation per look`}, prompts ${PROMPT_HASH}`,
   );
+  const thoughts = thinkingLog(url.pathname.split("/")[3] as string);
   const summary = await paintScoped(anthropic, {
     mcpUrl: url,
     bearer,
@@ -83,7 +85,9 @@ if (scoped) {
     thinkingBudget,
     maxLooks: positiveInt(args["max-looks"], "--max-looks"),
     log: (line) => console.log(line),
+    onThinking: thoughts.write,
   });
+  if (!args.random) console.log(`Thinking summaries: ${thoughts.path}`);
   console.log(
     `Done (${summary.stopReason}): ${summary.strokes} strokes over ${summary.looks} looks, status ${summary.status}. ` +
       `Models: ${summary.models.join(", ") || "none"}. Sent: ${summary.sent ? `effort ${summary.sent.effort ?? "none"}, thinking ${summary.sent.thinking}` : "n/a"}. ` +

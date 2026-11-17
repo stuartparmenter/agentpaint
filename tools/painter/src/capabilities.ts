@@ -10,7 +10,9 @@ export interface ModelParams {
   model: string;
   max_tokens: number;
   output_config?: { effort: Effort };
-  thinking?: { type: "adaptive" } | { type: "enabled"; budget_tokens: number };
+  thinking?:
+    | { type: "adaptive"; display: "summarized" }
+    | { type: "enabled"; budget_tokens: number; display: "summarized" };
   /** What was sent, for the record (and reported with each stroke). */
   sent: { effort: Effort | null; thinking: string };
 }
@@ -56,12 +58,13 @@ async function resolve(client: Anthropic, model: string, effort: Effort, thinkin
     params.sent.effort = effort;
   }
   if (caps.thinking?.types?.adaptive?.supported) {
-    params.thinking = { type: "adaptive" };
+    // "summarized" returns the thinking summary; several models omit it by default.
+    params.thinking = { type: "adaptive", display: "summarized" };
     params.sent.thinking = "adaptive";
   } else if (caps.thinking?.types?.enabled?.supported) {
     const budget = Math.min(thinkingBudget, maxOutput - 4000);
     if (budget >= 1024) {
-      params.thinking = { type: "enabled", budget_tokens: budget };
+      params.thinking = { type: "enabled", budget_tokens: budget, display: "summarized" };
       params.sent.thinking = `enabled:${budget}`;
     }
   }

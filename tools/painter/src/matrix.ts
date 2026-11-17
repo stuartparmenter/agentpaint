@@ -13,6 +13,7 @@ import { fail, positiveInt } from "./cli";
 import type { Json } from "./mcp";
 import { type PaintSummary, paintScoped } from "./paint";
 import { PROMPT_HASH } from "./prompt";
+import { thinkingLog } from "./thinking-log";
 
 const { values: args } = parseArgs({
   options: {
@@ -177,6 +178,7 @@ await Promise.all(
           thinkingBudget,
           maxLooks: budget + 10,
           log: (line) => console.log(`${tag} ${line}`),
+          onThinking: thinkingLog(cell.id as string).write,
         });
         console.log(`${tag} done: ${cell.summary.stopReason}, ${cell.summary.strokes} strokes`);
       } catch (e) {

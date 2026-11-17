@@ -28,7 +28,19 @@ export interface PaintOptions {
   thinkingBudget: number;
   /** Stop after this many looks (a safety cap; the painting's budget normally ends the run). */
   maxLooks: number;
+  /** Receives each look's thinking summaries, where the model returns them. */
+  onThinking?: (entry: ThinkingEntry) => void;
   log: (line: string) => void;
+}
+
+/** The thinking summaries from one look's conversation. */
+export interface ThinkingEntry {
+  look: number;
+  strokesBefore: number;
+  strokesAfter: number;
+  /** The painting ended during this look. */
+  ended: boolean;
+  thinking: string[];
 }
 
 export interface PaintSummary {
@@ -243,11 +255,26 @@ async function paintWithClaude(
       messages: [{ role: "user", content: LOOK_TURN }],
     });
     let last: BetaMessage | null = null;
+    const before = t.strokes;
+    const thinking: string[] = [];
     for await (const message of runner) {
       t.noteMessage(message);
       last = message;
+      for (const block of message.content) {
+        if (block.type === "thinking" && block.thinking.trim()) thinking.push(block.thinking.trim());
+      }
       if (message.stop_reason === "refusal") return `refusal: ${message.stop_details?.category ?? "unknown"}`;
       if (message.stop_reason === "max_tokens") opts.log("reply hit max_tokens");
+    }
+    if (thinking.length) {
+      opts.log(`thinking: ${thinking[0]?.split("\n")[0]?.slice(0, 200)}`);
+      opts.onThinking?.({
+        look: t.looks,
+        strokesBefore: before,
+        strokesAfter: t.strokes,
+        ended: !t.active,
+        thinking,
+      });
     }
     const note = last?.content.find((b) => b.type === "text");
     if (note?.type === "text") opts.log(`model: ${note.text.trim().split("\n")[0]}`);
