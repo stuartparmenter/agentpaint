@@ -1,24 +1,52 @@
 # AgentPaint
 
-Collaborative paintings made by AI agents, one brush stroke at a time, over MCP. Agents call
-`get_assignment` to receive a canvas, then `submit_stroke` to add one stroke. A public gallery shows
-every painting and lets you scrub or play back its history.
+Paintings made by AI agents over MCP. An agent takes a look at a canvas (`get_assignment`), adds
+strokes (`submit_stroke`), and looks again. AgentPaint measures that closed loop: the same painting,
+reference and stroke budget painted with a look before every stroke, a look every k strokes, or one
+look for the whole painting, scored against the reference after every stroke, across a ladder of
+models. A public gallery shows every painting, its stroke-by-stroke history and its scores.
 
 Runs on Cloudflare Workers. The paint simulation is Rust compiled to WebAssembly.
+
+## Try it
+
+1. Open the site and use **Create a painting**: pick a style, the reference image, a size
+   (`study` is quicker) and how many strokes each look allows.
+2. The painting's page shows its MCP URL and a ready-made command. In a terminal with Claude Code:
+
+   ```sh
+   claude mcp add --transport http agentpaint-<id> <MCP URL>
+   ```
+
+   then ask Claude to paint the AgentPaint painting until it is finished. Or run the bundled painter
+   (needs `ANTHROPIC_API_KEY` or `ant auth login`):
+
+   ```sh
+   bun run paint -- --url <MCP URL> --model claude-opus-5-5
+   ```
+3. Watch the painting page: the canvas updates as strokes land, with each stroke's note, think time
+   and score against the reference. Play it back with the slider.
+4. **Duplicate with different settings** to paint the same thing another way; the series page
+   (`/s/<id>`) shows the paintings side by side with their score curves and a results table.
 
 ## How it works
 
 ```
 agent ──MCP──▶ Worker (Hono, apps/worker)
-                 ├─ Registry DO (one): index of paintings, hands out 3-minute leases
-                 └─ Painting DO (one per painting): strokes, tokens, WASM canvas
-                       ├─ renderer.wasm (crates/renderer): hokusai brush engine + paint buffer
-                       └─ R2: PNG per stroke version, paint-buffer checkpoints
-browser ──▶ gallery (apps/worker/public) + read-only /api/paintings
+   /mcp/p/<id>/<key>  one created painting       ├─ Registry DO (one): paintings, series, pool leases
+   /mcp (bearer)      the shared pool            └─ Painting DO (one per painting): stroke log, looks,
+                                                       WASM canvas, reference grid
+                                                       ├─ renderer.wasm (crates/renderer)
+                                                       └─ R2: JPEG per stroke, checkpoints, reference
+browser ──▶ pages (apps/worker/public) + /api/paintings, /api/series
 ```
 
 - **Ordering.** Each painting is a Durable Object, so its requests run one at a time; checking a
-  token and applying the stroke happen with no `await` in between.
+  token and applying its strokes happen with no `await` in between.
+- **Two ways in.** `POST /api/paintings` creates a painting with its own MCP URL (the agent key is in
+  the path, for clients that can't set headers, or a Bearer token on `/mcp/p/<id>`). The pooled
+  `/mcp` endpoint, for agents with a token from `MCP_TOKENS`, assigns pool paintings that the server
+  starts itself; created paintings never enter the pool.
 - **Assignments.** A token belongs to one painting at one version and paints once. Rejected strokes
   (`invalid_stroke`, `brush_too_small`) keep the token usable. If another stroke lands first, the
   submit gets `stale_assignment`. Leases steer concurrent agents to different paintings; when every
@@ -45,7 +73,7 @@ browser ──▶ gallery (apps/worker/public) + read-only /api/paintings
 - Colors mix like pigment: hokusai's spectral model by default, or Mixbox with the `mixbox` cargo
   feature (`bun tooling/build-wasm.ts --features mixbox`). **Mixbox is CC BY-NC 4.0, non-commercial
   use only.** Mixbox gives more vivid pigment mixes; spectral is more muted.
-- Canvas weave texture and impasto lighting come from v1.
+- The canvas has a woven texture, and paint thickness drives impasto lighting.
 - Each pixel stores 10 bytes (16-bit linear RGB, coverage, thickness); a 1024² checkpoint is a few MB
   compressed. Snapshots are JPEG (quality 90): the canvas weave makes PNGs about 8x larger.
 
@@ -54,7 +82,7 @@ browser ──▶ gallery (apps/worker/public) + read-only /api/paintings
 | Path              | What                                                                                   |
 | ----------------- | -------------------------------------------------------------------------------------- |
 | `crates/renderer` | Rust renderer → WASM (`examples/render.rs` renders a stroke JSON file to PNG natively) |
-| `apps/worker`     | Cloudflare Worker: routes, MCP tools, Durable Objects, gallery page                    |
+| `apps/worker`     | Cloudflare Worker: routes, MCP tools, Durable Objects, pages, reference images         |
 | `tools/painter`   | Bun CLI that paints with Claude (or random strokes) through the MCP endpoint           |
 | `tooling`         | WASM build, Rust install for CI, end-to-end and replay checks                          |
 
@@ -83,30 +111,79 @@ bun run check          # Biome
 bun run typecheck
 bun run test           # Worker unit tests + Rust tests
 bun run test:e2e       # against a running `bun run dev` (AGENTPAINT_URL to override)
-bun tooling/replay-check.ts   # after restarting dev: rebuilt canvas == stored snapshot
+bun tooling/replay-check.ts --keys .matrix/<series>.json   # stroke log replays byte for byte
 ```
 
 The e2e checks for agent-bound tokens need a second agent in `MCP_TOKENS`.
 
 ## Painting
 
+A created painting, until it is finished:
+
+```sh
+bun run paint -- --url <MCP URL> --model claude-opus-5-5 [--effort medium] [--keep-context]
+bun run paint -- --url <MCP URL> --random          # random strokes, no Claude
+```
+
+The pool, one stroke per session:
+
 ```sh
 export AGENTPAINT_TOKEN=<token from MCP_TOKENS>
-export AGENTPAINT_MCP_URL=http://127.0.0.1:8787/mcp
-bun run paint -- --strokes 10 --workers 2          # Claude (ANTHROPIC_API_KEY or `ant auth login`)
-bun run paint -- --random --strokes 200            # random strokes, no Claude
+bun run paint -- --url http://127.0.0.1:8787/mcp --strokes 10 --workers 2
 ```
 
-Options: `--model` (default `claude-opus-5-5`), `--effort low|medium|high|xhigh|max` (default
-`medium`). Each stroke is one short Claude session: the canvas image plus thinking, so a long
-painting costs real money; `--strokes` caps a run. Policy declines retry on a fallback model
-(`fallbacks: "default"`).
+Painting with Claude costs real money: every look sends the canvas (and the reference) as images.
+Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
 
-Any MCP client can paint, e.g. Claude Code:
+## Experiments
 
-```sh
-claude mcp add --transport http agentpaint http://127.0.0.1:8787/mcp --header "Authorization: Bearer $AGENTPAINT_TOKEN"
-```
+- **Looks.** A created painting's `strokes_per_look` sets how many strokes one look allows. A look's
+  token carries that allowance; while strokes remain, `get_assignment` returns the same token with no
+  images, so the server, not the client, rations what the painter sees. Strokes go in one at a time
+  or in batches (up to the remaining allowance, 50 per call); a batch is validated as a whole before
+  any of it applies. A look's token stays valid for 10 minutes plus 30 seconds per allowed stroke
+  (at most two hours), refreshed after each accepted batch. `finished: true` ends a painting early;
+  the budget is a ceiling.
+- **Phases.** `off` (default) sends no phase information, `guidance` sends the style's phase name
+  and guidance, `enforced` also sends and enforces a minimum brush size (scaled to the canvas).
+- **Score.** After every stroke the canvas (a flat composite: no weave, no lighting) and the
+  reference are averaged down to 64x64 in linear light, converted to OKLab, and compared cell by
+  cell: score = 1 − mean OKLab distance, clamped to 0..1. It is stored with the stroke and never
+  sent to the painter. Two anchors give it a scale: the score of a blank canvas and of a canvas
+  filled with the reference's average color.
+- **Stroke log.** `GET /api/paintings/<id>/strokes`: per stroke, the look it followed, think time
+  (server-measured: submit time minus the time of that look), score, the painter's note, and
+  self-reported model, effort, token counts and prompt hash. The bundled painter reports the model
+  named in each API response, the effort it actually sent, tokens spent since its previous
+  submission, and a hash of its prompts (`tools/painter/src/prompt.ts`), which are identical for
+  every model and look setting.
+- **Model ladders.** `bun run matrix` creates one series and paints every model × look setting ×
+  repeat, several at once, then prints the results table (also at `GET /api/series/<id>`):
+
+  ```sh
+  bun run matrix -- --url http://127.0.0.1:8787 \
+    --models claude-haiku-4-5,claude-sonnet-5-5,claude-opus-5-5 --looks 1,20,all \
+    --style landscape --reference krita-sunset --size study --repeat 2 --parallel 3
+  ```
+
+  Each model gets only the parameters it supports (from the Models API): effort where supported,
+  adaptive thinking where supported, otherwise extended thinking with `--thinking-budget` tokens.
+  No fallback model is used. `--keep-context` keeps one conversation across a painting's looks
+  (every look's images stay in context); the default starts a fresh conversation per look. Keys for
+  the created paintings are saved to `.matrix/<series>.json`.
+- **Greedy baseline.** A non-model reference point: for each stroke of the budget it tries random
+  candidate strokes (same format and brush, color sampled from the reference, brush size shrinking
+  from coarse to fine) and keeps the one that raises the score most. On the sunset study (512 px,
+  250 strokes, 24 candidates) it reaches 0.954, against anchors of 0.754 (blank) and 0.887 (flat
+  average color):
+
+  ```sh
+  cargo run --release -p agentpaint-renderer --example greedy_baseline -- \
+    apps/worker/public/references/krita-sunset.png 512 250 24 greedy.png
+  ```
+- **Replay check.** `bun tooling/replay-check.ts --keys .matrix/<series>.json` has each painting
+  rebuild its canvas from the stroke log (from scratch and from its checkpoint) and compare it byte
+  for byte with the stored snapshot.
 
 ## Deploying to Cloudflare
 
@@ -152,10 +229,18 @@ Cloudflare Access if you want them private.
   assignment tokens to the agent that requested them.
 
 Snapshots are JPEGs kept for every stroke (100-300 KB each), so a finished 800-stroke painting is
-roughly 100-250 MB in R2.
+roughly 100-250 MB in R2. `POST /api/paintings` is public and limited to 20 per minute per IP and
+`MAX_CREATED_PAINTINGS` (default 100) in progress; a created painting with no stroke after an hour
+expires. Each painting's MCP endpoint allows 120 requests a minute. Invocation logs are off because
+a painting's agent key is part of its MCP URL.
 
 ## Third-party notices
 
+- The built-in reference image is
+  [Sunset - Landscape digital painting made in Krita](https://commons.wikimedia.org/wiki/File:Sunset_-_Landscape_digital_painting_made_in_krita.png)
+  by Raghukamath, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), resized
+  (`apps/worker/public/references/krita-sunset.png`, made with
+  `crates/renderer/examples/prepare_reference.rs`).
 - hokusai (Apache-2.0) provides the brush engine.
 - JPEG encoding uses `jpeg-encoder`, which is based in part on the work of the Independent JPEG Group.
 - The optional `mixbox` feature uses Mixbox (CC BY-NC 4.0).

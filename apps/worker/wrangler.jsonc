@@ -3,7 +3,9 @@
   "name": "agentpaint",
   "main": "src/index.ts",
   "compatibility_date": "2026-11-17",
-  "observability": { "enabled": true },
+  // Invocation logs would record request URLs, and a painting's agent key is
+  // part of its MCP URL; only explicit console logs (which never hold keys) are kept.
+  "observability": { "enabled": true, "logs": { "enabled": true, "invocation_logs": false } },
 
   // Compile the Rust renderer to WASM before every build; `wrangler dev`
   // rebuilds when the renderer sources change.
@@ -13,11 +15,12 @@
     "watch_dir": "../../crates/renderer/src"
   },
 
-  // Gallery page. The Worker only runs first for the API and MCP endpoint.
+  // Gallery, painting and series pages. The Worker runs first for the API, the
+  // MCP endpoints and the per-painting and per-series page routes.
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/mcp"]
+    "run_worker_first": ["/api/*", "/mcp", "/mcp/*", "/p/*", "/s/*"]
   },
 
   // Rendering a stroke is CPU-bound (tens of ms); give replays after an
@@ -34,10 +37,15 @@
 
   "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "agentpaint-snapshots" }],
 
-  // Per-agent MCP request rate limit.
-  "ratelimits": [{ "name": "MCP_LIMITER", "namespace_id": "2001", "simple": { "limit": 120, "period": 60 } }],
+  // MCP requests per pool agent, MCP requests per created painting, and
+  // painting creations per client IP.
+  "ratelimits": [
+    { "name": "MCP_LIMITER", "namespace_id": "2001", "simple": { "limit": 120, "period": 60 } },
+    { "name": "SCOPED_LIMITER", "namespace_id": "2003", "simple": { "limit": 120, "period": 60 } },
+    { "name": "CREATE_LIMITER", "namespace_id": "2005", "simple": { "limit": 20, "period": 60 } }
+  ],
 
-  "vars": { "MAX_ACTIVE_PAINTINGS": "6", "CANVAS_IDLE_SECONDS": "600" },
+  "vars": { "MAX_ACTIVE_PAINTINGS": "6", "MAX_CREATED_PAINTINGS": "100", "CANVAS_IDLE_SECONDS": "600" },
   // MCP_TOKENS: comma-separated `name:token` pairs (tokens >= 32 chars). Locally, set it in .dev.vars;
   // in production `wrangler secret put MCP_TOKENS`; for previews
   // `wrangler preview base-config secret put MCP_TOKENS`.
@@ -46,10 +54,12 @@
   // Worker Previews (one per branch, built by Workers Builds). Each Preview gets
   // its own Durable Objects automatically; snapshots go to a separate bucket.
   "previews": {
-    "vars": { "MAX_ACTIVE_PAINTINGS": "3", "CANVAS_IDLE_SECONDS": "600" },
+    "vars": { "MAX_ACTIVE_PAINTINGS": "3", "MAX_CREATED_PAINTINGS": "30", "CANVAS_IDLE_SECONDS": "600" },
     "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "agentpaint-snapshots-preview" }],
     "ratelimits": [
-      { "name": "MCP_LIMITER", "namespace_id": "2002", "simple": { "limit": 120, "period": 60 } }
+      { "name": "MCP_LIMITER", "namespace_id": "2002", "simple": { "limit": 120, "period": 60 } },
+      { "name": "SCOPED_LIMITER", "namespace_id": "2004", "simple": { "limit": 120, "period": 60 } },
+      { "name": "CREATE_LIMITER", "namespace_id": "2006", "simple": { "limit": 20, "period": 60 } }
     ]
   }
 }

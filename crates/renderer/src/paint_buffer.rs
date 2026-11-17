@@ -14,7 +14,7 @@ use hokusai_core::color::linear_to_srgb;
 pub const MAX_DIMENSION: u32 = 4096;
 
 /// Thickness saturates here, so stacked layers keep visible relief at stroke
-/// edges instead of growing without bound (v1's thickness grew ~1.6 per stroke).
+/// edges instead of growing without bound.
 pub const MAX_THICKNESS: f32 = 4.0;
 
 const U16_MAX: f32 = u16::MAX as f32;
@@ -73,6 +73,7 @@ fn to_u16(v: f32) -> u16 {
     (v.clamp(0.0, 1.0) * U16_MAX + 0.5) as u16
 }
 
+#[derive(Clone)]
 pub struct PaintBuffer {
     pub width: usize,
     pub height: usize,
@@ -96,12 +97,23 @@ impl PaintBuffer {
         y * self.width + x
     }
 
+    /// Flat composite (paint over the plain canvas color, no texture or lighting)
+    /// reduced to the scoring grid.
+    pub fn flat_grid(&self) -> crate::score::Grid {
+        let base = crate::score::canvas_base_linear();
+        crate::score::grid_from(self.width, self.height, |x, y| {
+            let p = &self.pixels[y * self.width + x];
+            let (a, c) = (p.opacity_f(), p.linear());
+            [0, 1, 2].map(|i| c[i] * a + base[i] * (1.0 - a))
+        })
+    }
+
     /// Composite paint over the textured canvas with impasto lighting.
     /// Returns tightly packed sRGB RGB8.
     pub fn composite_rgb(&self) -> Vec<u8> {
         let (w, h) = (self.width, self.height);
         let lut = srgb_lut();
-        // Light from the upper left, as in v1.
+        // Light from the upper left.
         let (lx, ly) = {
             let (x, y) = (0.5f32, -0.3f32);
             let len = (x * x + y * y).sqrt();
@@ -270,7 +282,7 @@ fn shared_texture(width: usize, height: usize) -> Rc<[u8]> {
     })
 }
 
-/// Procedural plain-weave canvas texture (v1's algorithm), quantized to u8.
+/// Procedural plain-weave canvas texture, quantized to u8.
 fn canvas_weave(width: usize, height: usize) -> Vec<u8> {
     let scale = width as f32 / 256.0;
     let spacing = (scale * 1.5).max(2.0);

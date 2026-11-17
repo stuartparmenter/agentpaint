@@ -16,7 +16,8 @@
     "typecheck": "bun run --cwd apps/worker typecheck && tsc -p apps/worker/test/tsconfig.json && bun run --cwd tools/painter typecheck",
     "paint": "bun run --cwd tools/painter start",
     "test:e2e": "bun tooling/e2e.ts",
-    "test": "bun test apps/worker/test && cargo test --workspace"
+    "test": "bun test apps/worker/test && cargo test --workspace",
+    "matrix": "bun run --cwd tools/painter matrix"
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.8",

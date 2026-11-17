@@ -1,27 +1,28 @@
 import { DurableObject } from "cloudflare:workers";
-import { ARCHIVE_AFTER_MS, CANVAS_SIZE, LEASE_MS, MEDIUM } from "./config";
-import { PAINTING_ID_LENGTH, randomId } from "./ids";
+import { ARCHIVE_AFTER_MS, CANVAS_SIZE, LEASE_MS, MEDIUM, type SizeName } from "./config";
+import { digestsEqual, PAINTING_ID_LENGTH, randomId } from "./ids";
 import { pick, STYLE_NAMES, STYLES, type StyleName } from "./styles";
+import type {
+  CreateSettings,
+  PaintingKind,
+  PaintingStats,
+  PaintingStatus,
+  PaintingSummary,
+  PhaseMode,
+} from "./types";
 
-export type PaintingStatus = "active" | "done" | "archived";
-
-export interface PaintingSummary {
-  id: string;
-  status: PaintingStatus;
-  style: StyleName;
-  prompt: string | null;
-  medium: string;
-  width: number;
-  height: number;
-  strokeCount: number;
-  maxStrokes: number;
-  createdAt: number;
-  lastStrokeAt: number | null;
-  finishedAt: number | null;
-}
+export type {
+  CreateSettings,
+  PaintingKind,
+  PaintingStats,
+  PaintingStatus,
+  PaintingSummary,
+  PhaseMode,
+} from "./types";
 
 interface Row extends Record<string, SqlStorageValue> {
   id: string;
+  kind: string;
   status: string;
   style: string;
   prompt: string | null;
@@ -34,11 +35,25 @@ interface Row extends Record<string, SqlStorageValue> {
   last_stroke_at: number | null;
   finished_at: number | null;
   lease_until: number;
+  series_id: string | null;
+  size: string | null;
+  strokes_per_look: number;
+  phases: string;
+  reference: string | null;
+  blank_score: number | null;
+  mean_color_score: number | null;
+  last_score: number | null;
+  looks: number;
+  mean_think_ms: number | null;
+  tokens_in: number;
+  tokens_out: number;
+  models: string;
 }
 
 function toSummary(r: Row): PaintingSummary {
   return {
     id: r.id,
+    kind: r.kind as PaintingKind,
     status: r.status as PaintingStatus,
     style: r.style as StyleName,
     prompt: r.prompt,
@@ -50,12 +65,30 @@ function toSummary(r: Row): PaintingSummary {
     createdAt: r.created_at,
     lastStrokeAt: r.last_stroke_at,
     finishedAt: r.finished_at,
+    seriesId: r.series_id,
+    size: r.size as SizeName | null,
+    strokesPerLook: r.strokes_per_look,
+    phases: r.phases as PhaseMode,
+    reference: r.reference,
+    blankScore: r.blank_score,
+    meanColorScore: r.mean_color_score,
+    lastScore: r.last_score,
+    looks: r.looks,
+    meanThinkMs: r.mean_think_ms,
+    tokensIn: r.tokens_in,
+    tokensOut: r.tokens_out,
+    models: JSON.parse(r.models) as string[],
   };
 }
 
+export type CreateResult =
+  | { ok: true; painting: PaintingSummary; seriesId: string; seriesKey: string | null }
+  | { ok: false; error: "series_not_found" | "series_key_mismatch" | "too_many_paintings" };
+
 /**
  * The global index of paintings (a single instance, named "registry").
- * Hands out leases so concurrent agents work on different paintings.
+ * Hands out pool leases so concurrent agents work on different paintings, and
+ * records created paintings and their series.
  */
 export class Registry extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -65,6 +98,7 @@ export class Registry extends DurableObject<Env> {
     this.sql = ctx.storage.sql;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS paintings (
       id TEXT PRIMARY KEY,
+      kind TEXT NOT NULL DEFAULT 'pool',
       status TEXT NOT NULL,
       style TEXT NOT NULL,
       prompt TEXT,
@@ -76,23 +110,40 @@ export class Registry extends DurableObject<Env> {
       created_at INTEGER NOT NULL,
       last_stroke_at INTEGER,
       finished_at INTEGER,
-      lease_until INTEGER NOT NULL DEFAULT 0
+      lease_until INTEGER NOT NULL DEFAULT 0,
+      series_id TEXT,
+      size TEXT,
+      strokes_per_look INTEGER NOT NULL DEFAULT 1,
+      phases TEXT NOT NULL DEFAULT 'enforced',
+      reference TEXT,
+      blank_score REAL,
+      mean_color_score REAL,
+      last_score REAL,
+      looks INTEGER NOT NULL DEFAULT 0,
+      mean_think_ms REAL,
+      tokens_in INTEGER NOT NULL DEFAULT 0,
+      tokens_out INTEGER NOT NULL DEFAULT 0,
+      models TEXT NOT NULL DEFAULT '[]'
     )`);
-    this.sql.exec("CREATE INDEX IF NOT EXISTS paintings_status ON paintings (status, last_stroke_at)");
+    this.sql.exec("CREATE INDEX IF NOT EXISTS paintings_status ON paintings (kind, status, last_stroke_at)");
+    this.sql.exec("CREATE INDEX IF NOT EXISTS paintings_series ON paintings (series_id)");
+    this.sql.exec(`CREATE TABLE IF NOT EXISTS series (
+      id TEXT PRIMARY KEY, key_hash TEXT NOT NULL, created_at INTEGER NOT NULL
+    )`);
   }
 
   /**
-   * Reserve an active painting that nobody holds, preferring the one painted
+   * Reserve an active pool painting that nobody holds, preferring the one painted
    * least recently. Creates a painting when none is free and fewer than
    * `maxActive` are in progress; otherwise shares a reserved one. Returns null
-   * only when no painting can be offered at all.
+   * only when no painting can be offered at all. Never returns created paintings.
    */
   async lease(maxActive: number): Promise<{ painting: PaintingSummary; created: boolean } | null> {
     const now = Date.now();
     this.archiveFinished(now);
     const free = this.sql
       .exec<Row>(
-        `SELECT * FROM paintings WHERE status = 'active' AND lease_until <= ?
+        `SELECT * FROM paintings WHERE kind = 'pool' AND status = 'active' AND lease_until <= ?
          ORDER BY last_stroke_at IS NOT NULL, last_stroke_at, created_at LIMIT 1`,
         now,
       )
@@ -103,40 +154,36 @@ export class Registry extends DurableObject<Env> {
     }
 
     const active = this.sql
-      .exec<{ n: number }>("SELECT COUNT(*) AS n FROM paintings WHERE status = 'active'")
+      .exec<{ n: number }>("SELECT COUNT(*) AS n FROM paintings WHERE kind = 'pool' AND status = 'active'")
       .one().n;
     if (active >= maxActive) {
       // Everything is reserved and no new painting may start. Rather than leave
       // the agent idle, share the painting whose reservation ends soonest: whoever
-      // submits first wins, and the other gets stale_assignment (v1's behavior).
+      // submits first wins, and the other gets stale_assignment.
       const shared = this.sql
-        .exec<Row>("SELECT * FROM paintings WHERE status = 'active' ORDER BY lease_until LIMIT 1")
+        .exec<Row>(
+          "SELECT * FROM paintings WHERE kind = 'pool' AND status = 'active' ORDER BY lease_until LIMIT 1",
+        )
         .toArray()[0];
       return shared ? { painting: toSummary(shared), created: false } : null;
     }
 
     const style = STYLES[pick(STYLE_NAMES)];
-    const row: Row = {
-      id: randomId(PAINTING_ID_LENGTH),
-      status: "active",
-      style: style.name,
-      prompt: pick(style.prompts),
-      medium: MEDIUM,
-      width: CANVAS_SIZE,
-      height: CANVAS_SIZE,
-      stroke_count: 0,
-      max_strokes: style.maxStrokes,
-      created_at: now,
-      last_stroke_at: null,
-      finished_at: null,
-      lease_until: now + LEASE_MS,
-    };
+    const id = randomId(PAINTING_ID_LENGTH);
     this.sql.exec(
-      `INSERT INTO paintings (id, status, style, prompt, medium, width, height, stroke_count, max_strokes,
-        created_at, last_stroke_at, finished_at, lease_until) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      ...Object.values(row),
+      `INSERT INTO paintings (id, kind, status, style, prompt, medium, width, height, max_strokes, created_at,
+        lease_until, strokes_per_look, phases) VALUES (?, 'pool', 'active', ?, ?, ?, ?, ?, ?, ?, ?, 1, 'enforced')`,
+      id,
+      style.name,
+      pick(style.prompts),
+      MEDIUM,
+      CANVAS_SIZE,
+      CANVAS_SIZE,
+      style.maxStrokes,
+      now,
+      now + LEASE_MS,
     );
-    return { painting: toSummary(row), created: true };
+    return { painting: this.row(id) as PaintingSummary, created: true };
   }
 
   /** Give a lease back early (e.g. the assignment could not be created). */
@@ -144,32 +191,105 @@ export class Registry extends DurableObject<Env> {
     this.sql.exec("UPDATE paintings SET lease_until = 0 WHERE id = ?", id);
   }
 
-  /** Called by the painting after each applied stroke; also ends the lease. */
-  async recordStroke(id: string, strokeCount: number, status: PaintingStatus, at: number): Promise<void> {
+  /**
+   * Record a painting created through the API, in a new series or (with that
+   * series' key hash) an existing one. Returns the series key only when the
+   * series is new.
+   */
+  async createPainting(
+    settings: CreateSettings,
+    series: { id: string; keyHash: string } | null,
+    newSeriesKey: { key: string; keyHash: string },
+    maxCreated: number,
+  ): Promise<CreateResult> {
+    const now = Date.now();
+    let seriesId: string;
+    let seriesKey: string | null = null;
+    if (series) {
+      const row = this.sql
+        .exec<{ key_hash: string }>("SELECT key_hash FROM series WHERE id = ?", series.id)
+        .toArray()[0];
+      if (!row) return { ok: false, error: "series_not_found" };
+      if (!digestsEqual(row.key_hash, series.keyHash)) return { ok: false, error: "series_key_mismatch" };
+      seriesId = series.id;
+    } else {
+      seriesId = randomId(PAINTING_ID_LENGTH);
+      seriesKey = newSeriesKey.key;
+    }
+
+    const active = this.sql
+      .exec<{ n: number }>("SELECT COUNT(*) AS n FROM paintings WHERE kind = 'created' AND status = 'active'")
+      .one().n;
+    if (active >= maxCreated) return { ok: false, error: "too_many_paintings" };
+
+    if (!series) {
+      this.sql.exec(
+        "INSERT INTO series (id, key_hash, created_at) VALUES (?, ?, ?)",
+        seriesId,
+        newSeriesKey.keyHash,
+        now,
+      );
+    }
+    const id = randomId(PAINTING_ID_LENGTH);
+    this.sql.exec(
+      `INSERT INTO paintings (id, kind, status, style, prompt, medium, width, height, max_strokes, created_at,
+        series_id, size, strokes_per_look, phases, reference, blank_score, mean_color_score)
+       VALUES (?, 'created', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      id,
+      settings.style,
+      settings.prompt,
+      MEDIUM,
+      settings.width,
+      settings.height,
+      settings.maxStrokes,
+      now,
+      seriesId,
+      settings.size,
+      settings.strokesPerLook,
+      settings.phases,
+      settings.reference,
+      settings.blankScore,
+      settings.meanColorScore,
+    );
+    return { ok: true, painting: this.row(id) as PaintingSummary, seriesId, seriesKey };
+  }
+
+  /** Called by the painting after each change; also ends any pool lease. */
+  async recordStroke(id: string, stats: PaintingStats): Promise<void> {
     // Updates can arrive out of order (each is sent after the stroke's R2
     // writes); never let an older one roll the painting back.
     this.sql.exec(
-      `UPDATE paintings SET stroke_count = ?, status = ?, last_stroke_at = ?, lease_until = 0,
-        finished_at = CASE WHEN ? = 'done' AND finished_at IS NULL THEN ? ELSE finished_at END
+      `UPDATE paintings SET stroke_count = ?, status = ?, last_stroke_at = CASE WHEN ? > 0 THEN ? ELSE last_stroke_at END,
+        lease_until = 0,
+        finished_at = CASE WHEN ? IN ('done', 'expired') AND finished_at IS NULL THEN ? ELSE finished_at END,
+        last_score = COALESCE(?, last_score), looks = COALESCE(?, looks), mean_think_ms = COALESCE(?, mean_think_ms),
+        tokens_in = COALESCE(?, tokens_in), tokens_out = COALESCE(?, tokens_out), models = COALESCE(?, models)
        WHERE id = ? AND stroke_count <= ? AND status = 'active'`,
-      strokeCount,
-      status,
-      at,
-      status,
-      at,
+      stats.strokeCount,
+      stats.status,
+      stats.strokeCount,
+      stats.at,
+      stats.status,
+      stats.at,
+      stats.lastScore ?? null,
+      stats.looks ?? null,
+      stats.meanThinkMs ?? null,
+      stats.tokensIn ?? null,
+      stats.tokensOut ?? null,
+      stats.models ? JSON.stringify(stats.models) : null,
       id,
-      strokeCount,
+      stats.strokeCount,
     );
     this.archiveFinished(Date.now());
   }
 
   // Reads are side-effect free (they're on the public, anonymous path); a done
-  // painting past its grace period reads as archived even before the
-  // archiving UPDATE runs on the next lease or stroke.
+  // pool painting past its grace period reads as archived even before the
+  // archiving UPDATE runs on the next lease or stroke. Expired paintings are hidden.
   async list(limit: number): Promise<PaintingSummary[]> {
     return this.sql
       .exec<Row>(
-        `SELECT ${this.columns()} FROM paintings
+        `SELECT ${this.columns()} FROM paintings WHERE status != 'expired'
          ORDER BY status = 'active' DESC, COALESCE(last_stroke_at, created_at) DESC LIMIT ?`,
         Date.now() - ARCHIVE_AFTER_MS,
         Math.max(1, Math.min(limit, 200)),
@@ -179,22 +299,45 @@ export class Registry extends DurableObject<Env> {
   }
 
   async get(id: string): Promise<PaintingSummary | null> {
+    return this.row(id);
+  }
+
+  /** A series and its paintings, in creation order. */
+  async series(id: string): Promise<{ id: string; createdAt: number; paintings: PaintingSummary[] } | null> {
+    const series = this.sql
+      .exec<{ id: string; created_at: number }>("SELECT id, created_at FROM series WHERE id = ?", id)
+      .toArray()[0];
+    if (!series) return null;
+    const paintings = this.sql
+      .exec<Row>(
+        `SELECT ${this.columns()} FROM paintings WHERE series_id = ? ORDER BY created_at`,
+        Date.now() - ARCHIVE_AFTER_MS,
+        id,
+      )
+      .toArray()
+      .map(toSummary);
+    return { id: series.id, createdAt: series.created_at, paintings };
+  }
+
+  private row(id: string): PaintingSummary | null {
     const row = this.sql
       .exec<Row>(`SELECT ${this.columns()} FROM paintings WHERE id = ?`, Date.now() - ARCHIVE_AFTER_MS, id)
       .toArray()[0];
     return row ? toSummary(row) : null;
   }
 
-  /** Columns with `status` computed as of now; takes the archive cutoff as its parameter. */
+  /** All columns, with `status` computed as of now; takes the archive cutoff as its first parameter. */
   private columns() {
-    return `id, CASE WHEN status = 'done' AND finished_at <= ? THEN 'archived' ELSE status END AS status,
-      style, prompt, medium, width, height, stroke_count, max_strokes, created_at, last_stroke_at,
-      finished_at, lease_until`;
+    return `id, kind,
+      CASE WHEN kind = 'pool' AND status = 'done' AND finished_at <= ? THEN 'archived' ELSE status END AS status,
+      style, prompt, medium, width, height, stroke_count, max_strokes, created_at, last_stroke_at, finished_at,
+      lease_until, series_id, size, strokes_per_look, phases, reference, blank_score, mean_color_score, last_score,
+      looks, mean_think_ms, tokens_in, tokens_out, models`;
   }
 
   private archiveFinished(now: number) {
     this.sql.exec(
-      "UPDATE paintings SET status = 'archived' WHERE status = 'done' AND finished_at <= ?",
+      "UPDATE paintings SET status = 'archived' WHERE kind = 'pool' AND status = 'done' AND finished_at <= ?",
       now - ARCHIVE_AFTER_MS,
     );
   }

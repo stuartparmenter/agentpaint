@@ -1,4 +1,5 @@
 import * as z from "zod/v4";
+import { NOTE_MAX } from "./config";
 
 // The stroke agents submit, in canvas pixels. The renderer works in
 // normalized units (fractions of the canvas), so strokes replay at any size.
@@ -45,6 +46,23 @@ export const strokeInput = z.object({
 
 export type StrokeInput = z.infer<typeof strokeInput>;
 
+/** One stroke of a batch on a created painting, with the painter's optional note. */
+export const batchStrokeInput = strokeInput.extend({
+  note: z.string().max(NOTE_MAX).optional().describe("One line on what this stroke is for (optional)"),
+});
+
+export type BatchStrokeInput = z.infer<typeof batchStrokeInput>;
+
+/** Largest brush diameter on a canvas this wide (MAX_BRUSH_SIZE at 1024 px, scaled). */
+export function maxBrushSize(width: number): number {
+  return Math.round((MAX_BRUSH_SIZE * width) / 1024);
+}
+
+/** A phase's minimum brush diameter (defined at 1024 px) scaled to this canvas. */
+export function scaledMinBrush(minBrushSize: number, width: number): number {
+  return Math.max(1, Math.round((minBrushSize * width) / 1024));
+}
+
 /** Renderer stroke format (see crates/renderer/src/stroke.rs). */
 export interface NormalizedStroke {
   points: { x: number; y: number; pressure: number }[];
@@ -55,6 +73,9 @@ export interface NormalizedStroke {
 
 /** Range checks that depend on the canvas; returns an error message or null. */
 export function checkBounds(stroke: StrokeInput, width: number, height: number): string | null {
+  if (stroke.brush.size > maxBrushSize(width)) {
+    return `brush.size must be at most ${maxBrushSize(width)} on a ${width}x${height} canvas`;
+  }
   for (const [i, p] of stroke.points.entries()) {
     if (p.x < 0 || p.x > width || p.y < 0 || p.y > height) {
       return `points[${i}] is outside the ${width}x${height} canvas`;

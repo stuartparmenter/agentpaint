@@ -1,15 +1,17 @@
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import type { Agent } from "./auth";
-import { DEFAULT_MAX_ACTIVE_PAINTINGS } from "./config";
+import { DEFAULT_MAX_ACTIVE_PAINTINGS, MAX_BATCH, NOTE_MAX } from "./config";
 import { parseToken } from "./ids";
 import type { Assignment, SubmitResult } from "./painting";
-import { strokeInput } from "./stroke";
+import { batchStrokeInput, strokeInput } from "./stroke";
 
-const INSTRUCTIONS =
-  "AgentPaint is a collaborative painting studio: many agents paint shared canvases one stroke at a time. " +
-  "Call get_assignment to receive a canvas and its metadata, look at it, then call submit_stroke once with " +
-  "the token and a single brush stroke. Repeat to keep painting.";
+const ANNOTATIONS = {
+  readOnlyHint: false,
+  destructiveHint: false,
+  idempotentHint: false,
+  openWorldHint: false,
+};
 
 function text(data: unknown, isError = false) {
   return {
@@ -26,13 +28,8 @@ function base64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-function assignmentResult(assignment: Assignment) {
-  return {
-    content: [
-      { type: "text" as const, text: JSON.stringify(assignment.metadata) },
-      { type: "image" as const, data: base64(assignment.image), mimeType: "image/jpeg" },
-    ],
-  };
+function image(bytes: Uint8Array) {
+  return { type: "image" as const, data: base64(bytes), mimeType: "image/jpeg" };
 }
 
 function maxActive(env: Env): number {
@@ -40,8 +37,41 @@ function maxActive(env: Env): number {
   return Number.isInteger(n) && n > 0 ? n : DEFAULT_MAX_ACTIVE_PAINTINGS;
 }
 
+function isAssignment(a: unknown): a is Assignment {
+  return typeof a === "object" && a !== null && "token" in a;
+}
+
+// --- Pooled endpoint (/mcp): bearer-token agents, leased pool paintings -----------
+
+const POOL_INSTRUCTIONS =
+  "AgentPaint is a collaborative painting studio: many agents paint shared canvases one stroke at a time. " +
+  "Call get_assignment to receive a canvas and its metadata, look at it, then call submit_stroke once with " +
+  "the token and a single brush stroke. Repeat to keep painting.";
+
+/** Result shape of the pooled endpoint's submit_stroke. */
+function poolResult(r: SubmitResult) {
+  if (r.applied) {
+    return { applied: true, stroke_count: r.stroke_count, max_strokes: r.max_strokes, status: r.status };
+  }
+  return {
+    applied: false,
+    reason: r.reason,
+    ...(r.detail ? { detail: r.detail } : {}),
+    ...(r.min_brush_size ? { min_brush_size: r.min_brush_size } : {}),
+  };
+}
+
+function poolAssignmentResult(assignment: Assignment) {
+  return {
+    content: [
+      { type: "text" as const, text: JSON.stringify(assignment.metadata) },
+      ...(assignment.images ? [image(assignment.images.canvas)] : []),
+    ],
+  };
+}
+
 export function buildServer(env: Env, agent: Agent): McpServer {
-  const server = new McpServer({ name: "agentpaint", version: "0.1.0" }, { instructions: INSTRUCTIONS });
+  const server = new McpServer({ name: "agentpaint", version: "0.1.0" }, { instructions: POOL_INSTRUCTIONS });
 
   server.registerTool(
     "get_assignment",
@@ -51,12 +81,7 @@ export function buildServer(env: Env, agent: Agent): McpServer {
         "(null means it's up to the painters), the current phase, its guidance and the minimum brush size. " +
         "The canvas is reserved for you for a few minutes. Then call submit_stroke with the token.",
       inputSchema: z.object({}),
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
+      annotations: ANNOTATIONS,
     },
     async () => {
       const registry = env.REGISTRY.getByName("registry");
@@ -71,18 +96,22 @@ export function buildServer(env: Env, agent: Agent): McpServer {
         const painting = env.PAINTING.getByName(lease.painting.id);
         if (lease.created) await painting.init(lease.painting);
         const assignment = await painting.assign(agent.name);
-        if (assignment) return assignmentResult(assignment);
+        if (isAssignment(assignment)) return poolAssignmentResult(assignment);
 
         const state = await painting.state();
         if (!state) {
-          // Its creation was interrupted before the painting stored anything: finish it.
+          // The painting has no state yet (its creation was interrupted): create it.
           await painting.init(lease.painting);
           const retried = await painting.assign(agent.name);
-          if (retried) return assignmentResult(retried);
+          if (isAssignment(retried)) return poolAssignmentResult(retried);
           await registry.release(lease.painting.id);
         } else {
           // The painting finished but the registry hadn't heard yet: resync and try another.
-          await registry.recordStroke(lease.painting.id, state.strokeCount, state.status, Date.now());
+          await registry.recordStroke(lease.painting.id, {
+            strokeCount: state.strokeCount,
+            status: state.status,
+            at: Date.now(),
+          });
         }
       }
       return text({ available: false, message: "No painting available right now. Try again shortly." });
@@ -101,22 +130,17 @@ export function buildServer(env: Env, agent: Agent): McpServer {
         token: z.string().max(64).describe("The token from get_assignment"),
         stroke_data: strokeInput,
       }),
-      annotations: {
-        readOnlyHint: false,
-        destructiveHint: false,
-        idempotentHint: false,
-        openWorldHint: false,
-      },
+      annotations: ANNOTATIONS,
     },
     async ({ token, stroke_data }) => {
       const parsed = parseToken(token);
-      if (!parsed) return text({ applied: false, reason: "invalid_token" } satisfies SubmitResult, true);
+      if (!parsed) return text({ applied: false, reason: "invalid_token" }, true);
       const result = await env.PAINTING.getByName(parsed.paintingId).submit(
         parsed.secret,
-        stroke_data,
+        [stroke_data],
         agent.name,
       );
-      return text(result, !result.applied);
+      return text(poolResult(result), !result.applied);
     },
   );
 
@@ -125,6 +149,129 @@ export function buildServer(env: Env, agent: Agent): McpServer {
 
 export function handleMcp(request: Request, env: Env, agent: Agent, parsedBody: unknown): Promise<Response> {
   const handler = createMcpHandler(() => buildServer(env, agent), {
+    responseMode: "json",
+    onerror: (e) => console.error("mcp error", e),
+  });
+  return handler.fetch(request, { parsedBody });
+}
+
+// --- Scoped endpoint (/mcp/p/<id>): one created painting -------------------------
+
+/** Agent label recorded for strokes made through a painting's own endpoint. */
+export const SCOPED_AGENT = "scoped";
+
+const SCOPED_INSTRUCTIONS =
+  "This endpoint paints one AgentPaint painting. Call get_assignment to take a look: it returns the painting's " +
+  "metadata, the current canvas and, when the painting has one, its reference image. A look's token allows " +
+  "metadata.strokes_remaining strokes, submitted with submit_stroke one at a time or in batches; no new image " +
+  "is shown until they are used. Then call get_assignment for the next look.";
+
+export function buildScopedServer(env: Env, paintingId: string): McpServer {
+  const server = new McpServer(
+    { name: "agentpaint", version: "0.1.0" },
+    { instructions: SCOPED_INSTRUCTIONS },
+  );
+  const painting = () => env.PAINTING.getByName(paintingId);
+
+  server.registerTool(
+    "get_assignment",
+    {
+      description:
+        "Take a look at this painting. A new look returns the metadata, then the reference image (if the " +
+        "painting has one) and the current canvas, each labeled. The look's token allows " +
+        "metadata.strokes_remaining strokes. While a look still has strokes left, this returns the same token " +
+        "and metadata with new_look false and no images.",
+      inputSchema: z.object({}),
+      annotations: ANNOTATIONS,
+    },
+    async () => {
+      const assignment = await painting().assign(SCOPED_AGENT);
+      if (!assignment) throw new Error("This painting does not exist.");
+      if (!isAssignment(assignment)) {
+        return text({
+          available: false,
+          status: assignment.status,
+          message: `This painting is ${assignment.status}.`,
+        });
+      }
+      const content: ({ type: "text"; text: string } | ReturnType<typeof image>)[] = [
+        { type: "text", text: JSON.stringify(assignment.metadata) },
+      ];
+      if (assignment.images?.reference) {
+        content.push({ type: "text", text: "Reference image:" }, image(assignment.images.reference));
+      }
+      if (assignment.images)
+        content.push({ type: "text", text: "Current canvas:" }, image(assignment.images.canvas));
+      return { content };
+    },
+  );
+
+  server.registerTool(
+    "submit_stroke",
+    {
+      description:
+        "Submit strokes on the current look's token: either stroke_data (one stroke) or strokes (a batch of up " +
+        `to the look's strokes_remaining, at most ${MAX_BATCH}). Coordinates and brush size are in canvas pixels. ` +
+        "A batch is validated as a whole before any of it is applied; a rejection names the index of the first " +
+        "invalid stroke and leaves the token usable. finished: true ends the painting after these strokes (the " +
+        "stroke budget is a ceiling). model, effort, input_tokens, output_tokens and prompt_hash are optional " +
+        "self-reported details recorded with the strokes.",
+      inputSchema: z.object({
+        token: z.string().max(64).describe("The token from get_assignment"),
+        stroke_data: strokeInput.optional().describe("A single stroke"),
+        note: z
+          .string()
+          .max(NOTE_MAX)
+          .optional()
+          .describe("One line on what the single stroke is for (optional)"),
+        strokes: z
+          .array(batchStrokeInput)
+          .max(MAX_BATCH)
+          .optional()
+          .describe("A batch of strokes, applied in order"),
+        finished: z.boolean().optional().describe("End the painting after these strokes"),
+        model: z.string().max(100).optional(),
+        effort: z.string().max(20).optional(),
+        input_tokens: z.number().int().min(0).max(1e9).optional(),
+        output_tokens: z.number().int().min(0).max(1e9).optional(),
+        prompt_hash: z.string().max(128).optional(),
+      }),
+      annotations: ANNOTATIONS,
+    },
+    async (args) => {
+      const parsed = parseToken(args.token);
+      if (!parsed || parsed.paintingId !== paintingId) {
+        return text({ applied: false, applied_count: 0, reason: "invalid_token" }, true);
+      }
+      if (args.stroke_data && args.strokes) {
+        return text(
+          {
+            applied: false,
+            applied_count: 0,
+            reason: "invalid_stroke",
+            detail: "Send stroke_data or strokes, not both.",
+          },
+          true,
+        );
+      }
+      const strokes = args.strokes ?? (args.stroke_data ? [{ ...args.stroke_data, note: args.note }] : []);
+      const result = await painting().submit(parsed.secret, strokes, SCOPED_AGENT, {
+        finished: args.finished,
+        model: args.model,
+        effort: args.effort,
+        inputTokens: args.input_tokens,
+        outputTokens: args.output_tokens,
+        promptHash: args.prompt_hash,
+      });
+      return text(result, !result.applied);
+    },
+  );
+
+  return server;
+}
+
+export function handleScopedMcp(request: Request, env: Env, paintingId: string, parsedBody: unknown) {
+  const handler = createMcpHandler(() => buildScopedServer(env, paintingId), {
     responseMode: "json",
     onerror: (e) => console.error("mcp error", e),
   });

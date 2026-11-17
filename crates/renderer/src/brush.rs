@@ -1,4 +1,4 @@
-//! Acrylic brush configuration for hokusai, ported from v1's libmypaint setup.
+//! Acrylic brush configuration for hokusai.
 //!
 //! The brush starts from libmypaint's defaults (hokusai's `Brush::new()` is all
 //! zeros), then sets explicit pressure mappings for radius and opacity. No

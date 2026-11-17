@@ -156,8 +156,9 @@ export function isStyleName(name: string): name is StyleName {
   return Object.hasOwn(STYLES, name);
 }
 
-export function currentPhase(style: Style, strokeCount: number): Phase {
-  const progress = strokeCount / style.maxStrokes;
+/** The phase at `strokeCount` strokes into a budget of `maxStrokes` (the style's own by default). */
+export function currentPhase(style: Style, strokeCount: number, maxStrokes = style.maxStrokes): Phase {
+  const progress = strokeCount / maxStrokes;
   return style.phases.find((p) => progress < p.until) ?? (style.phases.at(-1) as Phase);
 }
 

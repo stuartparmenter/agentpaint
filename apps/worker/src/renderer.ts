@@ -10,6 +10,7 @@ export {
   __wbg_reset_state as resetRenderer,
   Canvas,
   mixingModel,
+  prepareReference,
   validateStroke,
   version as rendererVersion,
 } from "./wasm/renderer.js";

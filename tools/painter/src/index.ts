@@ -1,64 +1,61 @@
 #!/usr/bin/env bun
-// AgentPaint painter: Claude agents that connect to the AgentPaint MCP server
-// and paint one stroke per session.
+// AgentPaint painter.
 //
-//   bun src/index.ts --strokes 20 --workers 2
+// A painting's own MCP URL (/mcp/p/<id>/<key>) paints that painting until it is
+// finished:
+//   bun src/index.ts --url https://…/mcp/p/<id>/<key> [--model ID] [--effort LEVEL] [--keep-context]
 //
-// Environment:
-//   AGENTPAINT_MCP_URL   MCP endpoint (default http://127.0.0.1:8787/mcp)
-//   AGENTPAINT_TOKEN     bearer token for the MCP endpoint (required)
-//   PAINTER_MODEL        Claude model (default claude-opus-5-5)
-//   PAINTER_EFFORT       low | medium | high | xhigh | max (default medium)
-//   Anthropic credentials: ANTHROPIC_API_KEY, or an `ant auth login` profile.
+// The pooled endpoint (/mcp, with AGENTPAINT_TOKEN) paints single strokes on
+// whatever paintings the pool assigns:
+//   bun src/index.ts --url https://…/mcp --strokes 20 --workers 2
+//
+// --random paints random strokes without calling Claude. Anthropic credentials
+// come from ANTHROPIC_API_KEY or an `ant auth login` profile.
 
 import { parseArgs } from "node:util";
 import Anthropic from "@anthropic-ai/sdk";
-import { betaTool } from "@anthropic-ai/sdk/helpers/beta/json-schema";
-import type { BetaToolResultContentBlockParam } from "@anthropic-ai/sdk/resources/beta";
-import { Client, SdkHttpError, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-import { SYSTEM_PROMPT, TURN_PROMPT } from "./prompt";
-
-type Effort = "low" | "medium" | "high" | "xhigh" | "max";
-const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"];
+import { EFFORTS, type Effort } from "./capabilities";
+import { paintScoped } from "./paint";
+import { runPool } from "./pool";
+import { PROMPT_HASH } from "./prompt";
 
 const { values: args } = parseArgs({
   options: {
-    strokes: { type: "string", default: "10" },
-    workers: { type: "string", default: "1" },
+    url: { type: "string" },
     model: { type: "string" },
     effort: { type: "string" },
-    url: { type: "string" },
+    "thinking-budget": { type: "string", default: "8000" },
+    "fresh-context": { type: "boolean", default: false },
+    "keep-context": { type: "boolean", default: false },
+    "max-looks": { type: "string", default: "2000" },
+    strokes: { type: "string", default: "10" },
+    workers: { type: "string", default: "1" },
     random: { type: "boolean", default: false },
     help: { type: "boolean", short: "h" },
   },
 });
 
 if (args.help) {
-  console.log(`Usage: agentpaint-painter [--strokes N] [--workers N] [--model ID] [--effort LEVEL] [--url MCP_URL]
+  console.log(`Usage: agentpaint-painter --url MCP_URL [options]
 
-  --strokes  total strokes to paint across all workers (default 10)
-  --workers  concurrent painters (default 1)
-  --model    Claude model (default $PAINTER_MODEL or claude-opus-5-5)
-  --effort   ${EFFORTS.join(" | ")} (default $PAINTER_EFFORT or medium)
-  --url      MCP endpoint (default $AGENTPAINT_MCP_URL or http://127.0.0.1:8787/mcp)
-  --random   paint random strokes without calling Claude (for local testing)`);
+  --url              a painting's MCP URL (/mcp/p/<id>/<key>), or the pooled /mcp endpoint
+                     (default $AGENTPAINT_MCP_URL or http://127.0.0.1:8787/mcp)
+  --model            Claude model (default $PAINTER_MODEL or claude-opus-5-5)
+  --effort           ${EFFORTS.join(" | ")} (default $PAINTER_EFFORT or medium); sent only to models that support it
+  --thinking-budget  extended-thinking tokens for models without adaptive thinking (default 8000)
+  --fresh-context    a new conversation for every look (default)
+  --keep-context     one conversation across all looks of the painting
+  --max-looks        stop a painting after this many looks (default 2000)
+  --random           random strokes, no Claude
+  Pooled endpoint only (with AGENTPAINT_TOKEN):
+  --strokes          total strokes across all workers (default 10)
+  --workers          concurrent painters (default 1)`);
   process.exit(0);
 }
 
-const strokeBudget = positiveInt(args.strokes, "--strokes");
-const workerCount = positiveInt(args.workers, "--workers");
-const model = args.model ?? process.env.PAINTER_MODEL ?? "claude-opus-5-5";
-const effort = (args.effort ?? process.env.PAINTER_EFFORT ?? "medium") as Effort;
-const mcpUrl = new URL(args.url ?? process.env.AGENTPAINT_MCP_URL ?? "http://127.0.0.1:8787/mcp");
-const bearer = process.env.AGENTPAINT_TOKEN;
-
-if (!EFFORTS.includes(effort)) fail(`--effort must be one of ${EFFORTS.join(", ")}`);
-if (!bearer) fail("AGENTPAINT_TOKEN is required (a token from the server's MCP_TOKENS)");
-const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(mcpUrl.hostname);
-if (mcpUrl.protocol !== "https:" && !(mcpUrl.protocol === "http:" && loopback)) {
-  fail(
-    `Refusing to send the token over ${mcpUrl.protocol} to ${mcpUrl.host}; use https (http only for localhost)`,
-  );
+function fail(message: string): never {
+  console.error(message);
+  process.exit(1);
 }
 
 function positiveInt(value: string | undefined, name: string): number {
@@ -67,197 +64,65 @@ function positiveInt(value: string | undefined, name: string): number {
   return n;
 }
 
-function fail(message: string): never {
-  console.error(message);
-  process.exit(1);
+const url = new URL(args.url ?? process.env.AGENTPAINT_MCP_URL ?? "http://127.0.0.1:8787/mcp");
+const model = args.model ?? process.env.PAINTER_MODEL ?? "claude-opus-5-5";
+const effort = (args.effort ?? process.env.PAINTER_EFFORT ?? "medium") as Effort;
+if (!EFFORTS.includes(effort)) fail(`--effort must be one of ${EFFORTS.join(", ")}`);
+if (args["fresh-context"] && args["keep-context"]) fail("choose --fresh-context or --keep-context, not both");
+const thinkingBudget = positiveInt(args["thinking-budget"], "--thinking-budget");
+
+const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+if (url.protocol !== "https:" && !(url.protocol === "http:" && loopback)) {
+  fail(
+    `Refusing to send credentials over ${url.protocol} to ${url.host}; use https (http only for localhost)`,
+  );
 }
 
-// Only needed (and only requires credentials) when painting with Claude.
 const anthropic = args.random ? null : new Anthropic();
-const usage = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
-let remaining = strokeBudget;
-let painted = 0;
+const scoped = /^\/mcp\/p\/[0-9A-Za-z]{12}(\/[0-9A-Za-z]{32})?$/.test(url.pathname);
 
-type McpContent = { type: string; text?: string; data?: string; mimeType?: string };
-
-/** Convert an MCP tool result into Messages API tool-result content (text and images pass through). */
-function toToolContent(content: McpContent[]): BetaToolResultContentBlockParam[] {
-  return content.flatMap((c): BetaToolResultContentBlockParam[] => {
-    if (c.type === "text" && c.text !== undefined) return [{ type: "text", text: c.text }];
-    if (c.type === "image" && c.data && (c.mimeType === "image/png" || c.mimeType === "image/jpeg")) {
-      return [{ type: "image", source: { type: "base64", media_type: c.mimeType, data: c.data } }];
-    }
-    return [];
-  });
-}
-
-async function connect(): Promise<Client> {
-  const client = new Client({ name: "agentpaint-painter", version: "0.1.0" });
-  await client.connect(
-    new StreamableHTTPClientTransport(mcpUrl, {
-      requestInit: { headers: { Authorization: `Bearer ${bearer}` } },
-    }),
-  );
-  return client;
-}
-
-async function paintOneStroke(tag: string, mcp: Client): Promise<"applied" | "busy" | "failed"> {
-  const { tools: mcpTools } = await mcp.listTools();
-  let outcome: "applied" | "busy" | "failed" = "failed";
-
-  const tools = mcpTools.map((tool) =>
-    betaTool({
-      name: tool.name,
-      description: tool.description ?? tool.name,
-      // Pass the JSON Schema through without the `$schema` dialect marker.
-      inputSchema: (({ $schema: _dialect, ...schema }) => schema)(tool.inputSchema) as { type: "object" },
-      run: async (input) => {
-        const result = await mcp.callTool({ name: tool.name, arguments: input as Record<string, unknown> });
-        const content = result.content as McpContent[];
-        const text = content.find((c) => c.type === "text")?.text ?? "";
-        if (tool.name === "get_assignment" && outcome !== "applied") {
-          // Reflect the latest assignment attempt: busy, or a canvas to paint.
-          outcome = text.includes('"available":false') ? "busy" : "failed";
-        }
-        if (tool.name === "submit_stroke") {
-          const parsed = JSON.parse(text || "{}");
-          if (parsed.applied) outcome = "applied";
-          console.log(
-            `${tag} submit_stroke: ${parsed.applied ? `applied (${parsed.stroke_count}/${parsed.max_strokes})` : `rejected: ${parsed.reason}${parsed.detail ? ` — ${parsed.detail}` : ""}`}`,
-          );
-        } else if (tool.name === "get_assignment" && outcome !== "busy") {
-          const meta = JSON.parse(text || "{}");
-          console.log(
-            `${tag} get_assignment: ${meta.style} "${meta.prompt ?? "open subject"}", stroke ${meta.stroke_count}/${meta.max_strokes}, phase ${meta.phase}`,
-          );
-        }
-        return toToolContent(content);
-      },
-    }),
-  );
-
-  if (!anthropic) throw new Error("Claude painting needs an Anthropic client");
-  const runner = anthropic.beta.messages.toolRunner({
-    model,
-    max_tokens: 16000,
-    max_iterations: 8,
-    system: SYSTEM_PROMPT,
-    cache_control: { type: "ephemeral" },
-    output_config: { effort },
-    // Retry a policy decline on a fallback model chosen by the API.
-    betas: ["server-side-fallback-2026-07-01"],
-    fallbacks: "default",
-    tools,
-    messages: [{ role: "user", content: TURN_PROMPT }],
-  });
-
-  for await (const message of runner) {
-    usage.input += message.usage.input_tokens;
-    usage.cacheRead += message.usage.cache_read_input_tokens ?? 0;
-    usage.cacheWrite += message.usage.cache_creation_input_tokens ?? 0;
-    usage.output += message.usage.output_tokens;
-    if (message.stop_reason === "refusal") {
-      console.warn(`${tag} model declined: ${message.stop_details?.explanation ?? "no details"}`);
-      return "failed";
-    }
-    if (message.stop_reason === "max_tokens") console.warn(`${tag} reply hit max_tokens`);
-    if (message.stop_reason === "end_turn") {
-      const note = message.content.find((b) => b.type === "text");
-      if (note && note.type === "text") console.log(`${tag} ${note.text.trim().split("\n")[0]}`);
-    }
-  }
-  return outcome;
-}
-
-/** One random stroke that respects the phase's minimum brush size (no Claude involved). */
-async function paintRandomStroke(tag: string, mcp: Client): Promise<"applied" | "busy" | "failed"> {
-  const assignment = await mcp.callTool({ name: "get_assignment", arguments: {} });
-  const content = toToolContent(assignment.content as McpContent[]);
-  const meta = JSON.parse(content.find((c) => c.type === "text")?.text ?? "{}");
-  if (meta.available === false) return "busy";
-  if (!content.some((c) => c.type === "image")) return "failed";
-
-  const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
-  const minSize = Math.min(200, meta.min_brush_size);
-  const size = rand(minSize, Math.min(200, Math.max(minSize * 1.6, minSize + 10)));
-  let x = rand(0, meta.canvas_width);
-  let y = rand(0, meta.canvas_height);
-  let angle = rand(0, Math.PI * 2);
-  const count = 2 + Math.floor(rand(0, 5));
-  const points: { x: number; y: number; pressure: number }[] = [];
-  for (let i = 0; i < count; i++) {
-    if (i > 0) {
-      angle += rand(-0.8, 0.8);
-      x = Math.min(meta.canvas_width, Math.max(0, x + Math.cos(angle) * size * 1.5));
-      y = Math.min(meta.canvas_height, Math.max(0, y + Math.sin(angle) * size * 1.5));
-    }
-    const taper = i === 0 || i === count - 1 ? 0.4 : 1;
-    points.push({ x, y, pressure: Math.min(1, rand(0.6, 1) * taper + 0.1) });
-  }
-  const stroke_data = {
-    points,
-    brush: { size, hardness: rand(0.2, 0.9), opacity: rand(0.5, 1), flow: rand(0.5, 1) },
-    color: { r: Math.floor(rand(0, 256)), g: Math.floor(rand(0, 256)), b: Math.floor(rand(0, 256)) },
-  };
-  const result = await mcp.callTool({ name: "submit_stroke", arguments: { token: meta.token, stroke_data } });
-  const text = (result.content as McpContent[]).find((c) => c.type === "text")?.text ?? "{}";
-  const parsed = JSON.parse(text);
+if (scoped) {
+  const withKey = /\/[0-9A-Za-z]{32}$/.test(url.pathname);
+  const bearer = withKey ? undefined : process.env.AGENTPAINT_TOKEN;
+  if (!withKey && !bearer)
+    fail("this URL has no key in its path; set AGENTPAINT_TOKEN to the painting's agent key");
+  const context = args["keep-context"] ? "keep" : "fresh";
   console.log(
-    `${tag} ${meta.style} ${meta.stroke_count + 1}/${meta.max_strokes} (${meta.phase}): ${parsed.applied ? "applied" : `rejected: ${parsed.reason}`}`,
+    `Painting ${url.pathname.split("/")[3]}: ${args.random ? "random strokes" : `${model}, effort ${effort}, ${context} context`}, prompts ${PROMPT_HASH}`,
   );
-  return parsed.applied ? "applied" : "failed";
+  const summary = await paintScoped(anthropic, {
+    mcpUrl: url,
+    bearer,
+    random: args.random,
+    model,
+    effort,
+    thinkingBudget,
+    context,
+    maxLooks: positiveInt(args["max-looks"], "--max-looks"),
+    log: (line) => console.log(line),
+  });
+  console.log(
+    `Done (${summary.stopReason}): ${summary.strokes} strokes over ${summary.looks} looks, status ${summary.status}. ` +
+      `Models: ${summary.models.join(", ") || "none"}. Sent: ${summary.sent ? `effort ${summary.sent.effort ?? "none"}, thinking ${summary.sent.thinking}` : "n/a"}. ` +
+      `Tokens: ${summary.inputTokens} in, ${summary.outputTokens} out.`,
+  );
+} else {
+  const bearer = process.env.AGENTPAINT_TOKEN;
+  if (!bearer) fail("the pooled endpoint needs AGENTPAINT_TOKEN (a token from the server's MCP_TOKENS)");
+  const strokes = positiveInt(args.strokes, "--strokes");
+  const workers = positiveInt(args.workers, "--workers");
+  console.log(
+    `Painting ${strokes} pool stroke(s) with ${workers} worker(s): ${args.random ? "random strokes" : `${model}, effort ${effort}`}, ${url.href}`,
+  );
+  const { painted, usage } = await runPool(anthropic, {
+    mcpUrl: url,
+    bearer,
+    strokes,
+    workers,
+    random: args.random,
+    model,
+    effort,
+    thinkingBudget,
+  });
+  console.log(`Done: ${painted} stroke(s). Tokens: ${usage.input} in, ${usage.output} out.`);
 }
-
-async function worker(index: number) {
-  const tag = `[painter ${index + 1}]`;
-  const mcp = await connect();
-  let consecutiveFailures = 0;
-  try {
-    while (remaining > 0) {
-      if (consecutiveFailures >= 5) {
-        console.error(`${tag} giving up after ${consecutiveFailures} failed attempts in a row`);
-        return;
-      }
-      remaining--;
-      let outcome: Awaited<ReturnType<typeof paintOneStroke>>;
-      try {
-        outcome = args.random ? await paintRandomStroke(tag, mcp) : await paintOneStroke(tag, mcp);
-      } catch (e) {
-        if (e instanceof SdkHttpError && e.status === 429) {
-          // The AgentPaint server rate-limits per agent token; wait out the window.
-          remaining++;
-          console.warn(`${tag} AgentPaint rate limit reached; waiting 60s`);
-          await Bun.sleep(60_000);
-          continue;
-        }
-        if (e instanceof Anthropic.RateLimitError) console.warn(`${tag} rate limited by the Claude API`);
-        else if (e instanceof Anthropic.APIError)
-          console.error(`${tag} Claude API error ${e.status}: ${e.message}`);
-        else console.error(`${tag} error:`, e);
-        outcome = "failed";
-      }
-      if (outcome === "applied") {
-        painted++;
-        consecutiveFailures = 0;
-        continue;
-      }
-      remaining++; // this attempt didn't paint; give the stroke back
-      if (outcome === "failed") consecutiveFailures++;
-      const wait = outcome === "busy" ? 30_000 : 10_000;
-      console.log(
-        `${tag} ${outcome === "busy" ? "all paintings busy" : "stroke failed"}; retrying in ${wait / 1000}s`,
-      );
-      await Bun.sleep(wait);
-    }
-  } finally {
-    await mcp.close();
-  }
-}
-
-console.log(
-  `Painting ${strokeBudget} stroke(s) with ${workerCount} worker(s): ${args.random ? "random strokes" : `${model}, effort ${effort}`}, ${mcpUrl.href}`,
-);
-await Promise.all(Array.from({ length: workerCount }, (_, i) => worker(i)));
-console.log(
-  `Done: ${painted} stroke(s). Tokens: ${usage.input} input, ${usage.cacheRead} cache read, ${usage.cacheWrite} cache write, ${usage.output} output.`,
-);

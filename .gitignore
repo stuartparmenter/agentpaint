@@ -14,5 +14,8 @@ apps/worker/src/wasm/
 # Local-only notes, design specs and plans
 /docs/
 
+# Keys of paintings created by `bun run matrix`
+/.matrix/
+
 # Scratch render output from tests and comparisons
 /test_output/

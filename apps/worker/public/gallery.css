@@ -1,73 +1,57 @@
-:root {
-  --bg: #f4f1ec;
-  --card: #ffffff;
-  --text: #1d1b18;
-  --muted: #6b665e;
-  --border: #e2ddd4;
-  --accent: #2f7d55;
-  --done: #9a6b1f;
-  --archived: #6b5a9a;
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #15141a;
-    --card: #1f1e26;
-    --text: #ece9e3;
-    --muted: #9b968e;
-    --border: #2e2c36;
-    --accent: #6fcf97;
-    --done: #d9b36a;
-    --archived: #ab93e0;
-  }
-}
-* {
-  box-sizing: border-box;
-  margin: 0;
-}
-body {
-  background: var(--bg);
-  color: var(--text);
-  font:
-    15px / 1.45 system-ui,
-    sans-serif;
-}
-header {
-  padding: 20px 16px;
-  max-width: 1400px;
-  margin: 0 auto;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px 16px;
-}
-h1 {
-  font-size: 20px;
-  font-weight: 650;
-}
-header p {
-  color: var(--muted);
-  font-size: 13px;
-}
-main {
+/* Home page: create panel beside the gallery grid. Tokens live in site.css. */
+.home {
   max-width: 1400px;
   margin: 0 auto;
   padding: 0 16px 40px;
   display: grid;
   gap: 20px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr));
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+@media (min-width: 900px) {
+  .home {
+    grid-template-columns: minmax(0, 1fr) 340px;
+  }
+  .create-panel {
+    grid-column: 2;
+    grid-row: 1;
+    position: sticky;
+    top: 16px;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+  }
+  #paintings {
+    grid-column: 1;
+    grid-row: 1;
+  }
+}
+.create-panel {
+  display: block;
+}
+.create-panel > summary {
+  font-size: 16px;
+}
+.create-panel > p {
+  margin: 8px 0 12px;
+}
+#paintings {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr));
 }
 .card {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
+  min-width: 0;
 }
 .card img {
   display: block;
   width: 100%;
   aspect-ratio: 1;
   object-fit: contain;
-  background: #ebe6dc;
+  background: var(--canvas-bg);
 }
 .body {
   padding: 12px 14px 14px;
@@ -82,30 +66,22 @@ main {
   font-size: 13px;
   color: var(--muted);
 }
+.badges {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
 .prompt {
   color: var(--text);
   font-size: 14px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  text-decoration: none;
 }
-.badge {
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 650;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  border: 1px solid currentColor;
-}
-.badge.active {
-  color: var(--accent);
-}
-.badge.done {
-  color: var(--done);
-}
-.badge.archived {
-  color: var(--archived);
+.prompt:hover {
+  text-decoration: underline;
 }
 .controls {
   display: flex;
@@ -115,7 +91,6 @@ main {
 .controls input {
   flex: 1;
   min-width: 0;
-  accent-color: var(--accent);
 }
 .controls button {
   background: none;

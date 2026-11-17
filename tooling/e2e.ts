@@ -6,6 +6,9 @@
 
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
+// biome-ignore lint/suspicious/noExplicitAny: JSON from tool results and the API is untyped.
+type Json = Record<string, any>;
+
 const base = (process.env.AGENTPAINT_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
 const devTokens = process.env.AGENTPAINT_TOKEN ? [] : await readDevTokens();
 const token = process.env.AGENTPAINT_TOKEN ?? devTokens[0];
@@ -122,7 +125,8 @@ check(
   image?.mimeType === "image/jpeg" && jpeg?.signature === true && jpeg.width === meta?.canvas_width,
   jpeg,
 );
-check("new painting starts at stroke 0", meta?.stroke_count === 0, meta?.stroke_count);
+const startCount: number = meta?.stroke_count;
+check("the assignment reports the stroke count", Number.isInteger(startCount) && startCount >= 0, startCount);
 
 const paintingId = String(meta.token).split("-")[0];
 const tiny = bigStroke(meta, 300);
@@ -148,7 +152,7 @@ check("schema validation rejects malformed strokes", badSchema.isError === true,
 const applied = await call(client, "submit_stroke", { token: meta.token, stroke_data: bigStroke(meta, 300) });
 check(
   "applies a valid stroke after rejections",
-  applied.json?.applied === true && applied.json?.stroke_count === 1,
+  applied.json?.applied === true && applied.json?.stroke_count === startCount + 1,
   applied.json,
 );
 
@@ -233,5 +237,339 @@ check(
 );
 
 await client.close();
+
+// --- Created paintings and the scoped endpoint ---------------------------------
+
+async function create(settings: Record<string, unknown>) {
+  const res = await fetch(`${base}/api/paintings`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+  return { status: res.status, body: (await res.json()) as Json };
+}
+
+async function connectUrl(url: string, headers: Record<string, string> = {}) {
+  const c = new Client({ name: "agentpaint-e2e", version: "0.1.0" });
+  await c.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }));
+  return c;
+}
+
+// Every MCP response a painter sees, to check the score never leaks to it.
+const painterTexts: string[] = [];
+async function scopedCall(c: Client, name: string, args: Record<string, unknown> = {}) {
+  const r = await call(c, name, args);
+  for (const block of r.content) if (block.text) painterTexts.push(block.text);
+  return r;
+}
+
+function studyStroke(x: number, y: number, note?: string) {
+  return {
+    points: [
+      { x, y, pressure: 0.9 },
+      { x: x + 120, y: y + 20, pressure: 1 },
+    ],
+    brush: { size: 40, hardness: 0.6, opacity: 1, flow: 0.9 },
+    color: { r: 200, g: 120, b: 160 },
+    ...(note ? { note } : {}),
+  };
+}
+
+const bad = await create({ style: "landscape", reference: "no-such-reference" });
+check("creation rejects an unknown reference", bad.status === 400, bad);
+const tooBig = await create({ style: "landscape", size: "study", strokes_per_look: 9999 });
+check("creation rejects strokes_per_look above the budget", tooBig.status === 400, tooBig.status);
+
+const made = await create({
+  style: "landscape",
+  reference: "krita-sunset",
+  size: "study",
+  strokes_per_look: 3,
+  prompt: "e2e",
+});
+const p = made.body;
+check(
+  "creates a study with the reference's aspect ratio",
+  made.status === 201 &&
+    p.settings?.width === 512 &&
+    p.settings?.height === 288 &&
+    p.settings?.kind === "created",
+  made.status,
+);
+check(
+  "returns keys, an MCP URL and a new series",
+  typeof p.agent_key === "string" &&
+    typeof p.owner_key === "string" &&
+    p.mcp_url?.endsWith(`/mcp/p/${p.id}/${p.agent_key}`) &&
+    !!p.series_key,
+);
+
+const wrongKey = await fetch(`${base}/mcp/p/${p.id}/${"A".repeat(32)}`, { method: "POST", body: "{}" });
+check("scoped endpoint rejects a wrong key", wrongKey.status === 401, wrongKey.status);
+const noKey = await fetch(`${base}/mcp/p/${p.id}`, { method: "POST", body: "{}" });
+check("scoped endpoint rejects a missing key", noKey.status === 401, noKey.status);
+const poolKeyOnScoped = await fetch(`${base}/mcp/p/${p.id}`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${token}` },
+  body: "{}",
+});
+check("a pool token doesn't open a scoped endpoint", poolKeyOnScoped.status === 401, poolKeyOnScoped.status);
+
+const scopedClient = await connectUrl(p.mcp_url);
+const look1 = await scopedCall(scopedClient, "get_assignment");
+const kinds = look1.content.map((c) =>
+  c.type === "text" ? (c.text?.startsWith("{") ? "meta" : c.text) : c.type,
+);
+check(
+  "a new look shows the labeled reference and canvas",
+  JSON.stringify(kinds) === JSON.stringify(["meta", "Reference image:", "image", "Current canvas:", "image"]),
+  kinds,
+);
+const m1 = look1.json;
+check(
+  "look metadata reports the allowance and omits phase fields when phases are off",
+  m1.strokes_remaining === 3 &&
+    m1.new_look === true &&
+    m1.look === 1 &&
+    !("phase" in m1) &&
+    !("min_brush_size" in m1),
+  m1,
+);
+const canvasImage = look1.content.filter((c) => c.type === "image")[1];
+const canvasSize = canvasImage?.data ? jpegSize(canvasImage.data) : undefined;
+check(
+  "the canvas image has the painting's size",
+  canvasSize?.width === 512 && canvasSize?.height === 288,
+  canvasSize,
+);
+
+const sameLook = await scopedCall(scopedClient, "get_assignment");
+check(
+  "while a look has strokes left, get_assignment returns the same token without images",
+  sameLook.json?.token === m1.token &&
+    sameLook.json?.new_look === false &&
+    sameLook.content.every((c) => c.type === "text"),
+  sameLook.json,
+);
+
+const halfBad = await scopedCall(scopedClient, "submit_stroke", {
+  token: m1.token,
+  strokes: [
+    studyStroke(20, 40),
+    {
+      ...studyStroke(20, 80),
+      points: [
+        { x: 9999, y: 1, pressure: 1 },
+        { x: 1, y: 1, pressure: 1 },
+      ],
+    },
+  ],
+});
+check(
+  "a batch with an invalid stroke applies nothing and names its index",
+  halfBad.json?.applied === false && halfBad.json?.applied_count === 0 && halfBad.json?.index === 1,
+  halfBad.json,
+);
+const overSize = await scopedCall(scopedClient, "submit_stroke", {
+  token: m1.token,
+  stroke_data: { ...studyStroke(20, 40), brush: { size: 150, hardness: 0.5, opacity: 1, flow: 1 } },
+});
+check("brush size is capped for the canvas width", overSize.json?.reason === "invalid_stroke", overSize.json);
+
+const applied2 = await scopedCall(scopedClient, "submit_stroke", {
+  token: m1.token,
+  strokes: [studyStroke(20, 40, "sky band"), studyStroke(40, 120, "horizon")],
+  model: "e2e-model",
+  effort: "low",
+  input_tokens: 123,
+  output_tokens: 45,
+  prompt_hash: "abc123",
+});
+check(
+  "a valid batch applies and reports what's left",
+  applied2.json?.applied === true &&
+    applied2.json?.applied_count === 2 &&
+    applied2.json?.strokes_remaining === 1,
+  applied2.json,
+);
+const overAllowance = await scopedCall(scopedClient, "submit_stroke", {
+  token: m1.token,
+  strokes: [studyStroke(60, 160), studyStroke(60, 200)],
+});
+check(
+  "a batch can't exceed the look's allowance",
+  overAllowance.json?.reason === "too_many_strokes",
+  overAllowance.json,
+);
+const last = await scopedCall(scopedClient, "submit_stroke", {
+  token: m1.token,
+  stroke_data: studyStroke(60, 160),
+  note: "water",
+});
+check(
+  "the last stroke of a look uses it up",
+  last.json?.applied === true && last.json?.strokes_remaining === 0,
+  last.json,
+);
+const used = await scopedCall(scopedClient, "submit_stroke", {
+  token: m1.token,
+  stroke_data: studyStroke(60, 200),
+});
+check("a used-up look's token paints no more", used.json?.reason === "token_used", used.json);
+
+const look2 = await scopedCall(scopedClient, "get_assignment");
+check(
+  "the next look is a fresh look with images",
+  look2.json?.new_look === true &&
+    look2.json?.token !== m1.token &&
+    look2.json?.look === 2 &&
+    look2.content.some((c) => c.type === "image"),
+  look2.json,
+);
+const finish = await scopedCall(scopedClient, "submit_stroke", {
+  token: look2.json.token,
+  stroke_data: studyStroke(200, 200),
+  finished: true,
+});
+check(
+  "finished: true ends the painting",
+  finish.json?.applied === true && finish.json?.status === "done",
+  finish.json,
+);
+const afterFinish = await scopedCall(scopedClient, "get_assignment");
+check("a finished painting hands out no looks", afterFinish.json?.available === false, afterFinish.json);
+await scopedClient.close();
+
+const log = (await (await fetch(`${base}/api/paintings/${p.id}/strokes`)).json()) as Json[];
+check("the stroke log has every applied stroke", log.length === 4, log.length);
+check(
+  "the log records looks, notes, think time and scores",
+  log[0]?.look === 1 &&
+    log[3]?.look === 2 &&
+    log[0]?.note === "sky band" &&
+    log[2]?.note === "water" &&
+    log.every((s) => typeof s.think_ms === "number" && s.think_ms >= 0 && typeof s.score === "number"),
+  log,
+);
+check(
+  "self-reported fields are recorded, token counts once per submission",
+  log[0]?.model === "e2e-model" &&
+    log[0]?.effort === "low" &&
+    log[0]?.input_tokens === 123 &&
+    log[1]?.input_tokens === null &&
+    log[0]?.prompt_hash === "abc123",
+  log[0],
+);
+check(
+  "the score never reaches the painter",
+  painterTexts.every((t) => !/score/i.test(t)),
+  painterTexts.filter((t) => /score/i.test(t)),
+);
+
+const replayCheck = await fetch(`${base}/api/paintings/${p.id}/v/4`);
+check("snapshots exist for batched strokes", replayCheck.status === 200, replayCheck.status);
+const refImage = await fetch(`${base}/api/paintings/${p.id}/reference`);
+check("serves the painting's reference image", refImage.status === 200, refImage.status);
+
+const verifyAsAgent = await fetch(`${base}/api/paintings/${p.id}/verify`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${p.agent_key}` },
+});
+check("only the owner can run the replay check", verifyAsAgent.status === 401, verifyAsAgent.status);
+const verified = (await (
+  await fetch(`${base}/api/paintings/${p.id}/verify`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${p.owner_key}` },
+  })
+).json()) as Json;
+check(
+  "the stroke log replays to the stored snapshot",
+  verified.fromScratch === true && verified.version === 4,
+  verified,
+);
+
+// Siblings, series and owner finish.
+const wrongSeries = await create({
+  style: "landscape",
+  size: "study",
+  series: p.series_id,
+  series_key: "B".repeat(32),
+});
+check("adding to a series needs its key", wrongSeries.status === 403, wrongSeries.status);
+const sibling = await create({
+  style: "landscape",
+  reference: "krita-sunset",
+  size: "study",
+  strokes_per_look: 250,
+  phases: "enforced",
+  series: p.series_id,
+  series_key: p.series_key,
+});
+check(
+  "a sibling joins the series",
+  sibling.status === 201 && sibling.body.series_id === p.series_id && sibling.body.series_key === null,
+  sibling.body.series_id,
+);
+const sib = await connectUrl(`${base}/mcp/p/${sibling.body.id}`, {
+  Authorization: `Bearer ${sibling.body.agent_key}`,
+});
+const sibLook = await scopedCall(sib, "get_assignment");
+check(
+  "enforced phases send the brush floor, scaled to the canvas",
+  sibLook.json?.min_brush_size === 60 &&
+    typeof sibLook.json?.phase === "string" &&
+    sibLook.json?.strokes_remaining === 250,
+  sibLook.json,
+);
+await sib.close();
+const notOwner = await fetch(`${base}/api/paintings/${sibling.body.id}/finish`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${sibling.body.agent_key}` },
+});
+check("only the owner key finishes a painting", notOwner.status === 401, notOwner.status);
+const owner = await fetch(`${base}/api/paintings/${sibling.body.id}/finish`, {
+  method: "POST",
+  headers: { Authorization: `Bearer ${sibling.body.owner_key}` },
+});
+check("the owner key finishes it", owner.status === 200, owner.status);
+
+const series = (await (await fetch(`${base}/api/series/${p.series_id}`)).json()) as Json;
+check(
+  "the series lists both paintings with a results table",
+  series.paintings?.length === 2 && Array.isArray(series.table) && series.table.length === 2,
+  series,
+);
+const cell = series.table?.find((c: Json) => c.strokes_per_look === 3);
+check(
+  "results include the final score and think time",
+  typeof cell?.final_score === "number" && typeof cell?.mean_think_ms === "number",
+  cell,
+);
+
+// The pool never hands out created paintings.
+const poolClient = await connect(token);
+const poolLook = await call(poolClient, "get_assignment");
+const poolId = String(poolLook.json?.token).split("-")[0];
+check("the pool doesn't hand out created paintings", poolId !== p.id && poolId !== sibling.body.id, poolId);
+const crossed = await call(poolClient, "submit_stroke", {
+  token: look2.json.token,
+  stroke_data: bigStroke(poolLook.json, 300),
+});
+check(
+  "a scoped token doesn't work on the pool endpoint",
+  crossed.json?.reason === "invalid_token",
+  crossed.json,
+);
+await poolClient.close();
+
+const paintingPage = await fetch(`${base}/p/${p.id}`);
+check(
+  "serves the painting page",
+  paintingPage.status === 200 && (paintingPage.headers.get("content-type") ?? "").includes("text/html"),
+  page.status,
+);
+const seriesPage = await fetch(`${base}/s/${p.series_id}`);
+check("serves the series page", seriesPage.status === 200, seriesPage.status);
+
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);

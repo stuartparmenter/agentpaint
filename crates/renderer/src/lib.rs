@@ -6,6 +6,7 @@ mod brush;
 mod color;
 mod mixing;
 mod paint_buffer;
+pub mod score;
 mod spline;
 mod stroke;
 mod surface;
@@ -25,6 +26,7 @@ pub const MAX_POINTS: usize = 64;
 /// Catmull-Rom subdivisions per span; gives the brush engine dense, tablet-like input.
 const SEGMENTS_PER_SPAN: usize = 16;
 
+#[derive(Clone)]
 pub struct Canvas {
     buf: PaintBuffer,
     version: u32,
@@ -145,17 +147,12 @@ impl Canvas {
     /// PNG compresses poorly (~2 MB at 1024²); JPEG at quality 90 is several
     /// times smaller and visually identical. Lossless state lives in checkpoints.
     pub fn render_jpeg(&self, quality: u8) -> Result<Vec<u8>, String> {
-        let (w, h) = (self.width(), self.height());
-        let (w16, h16) = (u16::try_from(w), u16::try_from(h));
-        let (Ok(w16), Ok(h16)) = (w16, h16) else {
-            return Err("canvas too large for JPEG".into());
-        };
-        let mut out = Vec::new();
-        let encoder = jpeg_encoder::Encoder::new(&mut out, quality.clamp(1, 100));
-        encoder
-            .encode(&self.buf.composite_rgb(), w16, h16, jpeg_encoder::ColorType::Rgb)
-            .map_err(|e| e.to_string())?;
-        Ok(out)
+        encode_jpeg(&self.buf.composite_rgb(), self.width(), self.height(), quality)
+    }
+
+    /// Score against a reference grid (see [`score`]); 0..1, higher is closer.
+    pub fn score(&self, reference: &[[f32; 3]]) -> f32 {
+        score::score(&self.buf.flat_grid(), reference)
     }
 
     /// Serialize the paint state (including the stroke count) for later restore.
@@ -194,6 +191,18 @@ pub fn validate(stroke: &Stroke) -> Result<(), String> {
         return Err("speed must be a positive number".into());
     }
     Ok(())
+}
+
+/// Encode tightly packed RGB8 as JPEG.
+pub fn encode_jpeg(rgb: &[u8], width: u32, height: u32, quality: u8) -> Result<Vec<u8>, String> {
+    let (Ok(w16), Ok(h16)) = (u16::try_from(width), u16::try_from(height)) else {
+        return Err("image too large for JPEG".into());
+    };
+    let mut out = Vec::new();
+    jpeg_encoder::Encoder::new(&mut out, quality.clamp(1, 100))
+        .encode(rgb, w16, h16, jpeg_encoder::ColorType::Rgb)
+        .map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 fn encode_png(rgb: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
@@ -267,7 +276,7 @@ mod tests {
 
     #[test]
     fn opaque_stroke_covers_regardless_of_paint_underneath() {
-        // The v1 bug: thick paint resisted new color. Stack many red strokes,
+        // Thick paint must not resist new color. Stack many red strokes,
         // then one opaque blue stroke must still read as blue.
         let mut c = Canvas::new(96, 96).unwrap();
         for i in 0..20 {
@@ -362,6 +371,25 @@ mod tests {
         assert_eq!(restored.buf.pixels, a.buf.pixels);
         assert_eq!(restored.render_png().unwrap(), a.render_png().unwrap());
         assert_eq!(restored.render_jpeg(90).unwrap(), a.render_jpeg(90).unwrap());
+    }
+
+    #[test]
+    fn painting_toward_the_reference_raises_the_score() {
+        // Reference: a 64x64 grid that is red on the left half, canvas color elsewhere.
+        let base = score::canvas_base_linear();
+        let red = color::srgb_to_linear_rgb([0.85, 0.1, 0.1]);
+        let reference = score::grid_from(score::GRID, score::GRID, |x, _| if x < score::GRID / 2 { red } else { base });
+        let mut c = Canvas::new(128, 128).unwrap();
+        let before = c.score(&reference);
+        for (i, y) in [0.1, 0.3, 0.5, 0.7, 0.9].iter().enumerate() {
+            c.apply_stroke(&stroke(&[(0.0, *y, 1.0), (0.45, *y, 1.0)], (217, 26, 26), 0.25, 1.0), i as u32 + 1)
+                .unwrap();
+        }
+        let after = c.score(&reference);
+        assert!(after > before + 0.1, "score {before} -> {after}");
+        let mut wrong = Canvas::new(128, 128).unwrap();
+        wrong.apply_stroke(&stroke(&[(0.55, 0.5, 1.0), (1.0, 0.5, 1.0)], (20, 20, 200), 0.4, 1.0), 1).unwrap();
+        assert!(wrong.score(&reference) < before, "painting the wrong area should lower the score");
     }
 
     #[test]

@@ -8,8 +8,7 @@
 //! with every dab (driven by `flow`) but never exceeds the stroke's `opacity`.
 //! At commit, each touched pixel gets the brush color composited source-over at
 //! that coverage, so an opaque stroke fully covers whatever is underneath, no
-//! matter how much paint is already there (v1 weighted old paint by its
-//! ever-growing thickness, so late strokes barely changed the color).
+//! matter how much paint is already there.
 //!
 //! A stroke is one color (acrylic has no smudge or color dynamics), so mixing
 //! once per pixel at commit gives the same result as mixing per dab, at a
@@ -125,7 +124,7 @@ fn draw_dab_coverage(
             if d > 1.0 {
                 continue;
             }
-            // Hard core out to `hardness`, quadratic falloff beyond (v1's profile).
+            // Hard core out to `hardness`, quadratic falloff beyond.
             let mask = if hardness >= 1.0 || d <= hardness {
                 1.0
             } else {

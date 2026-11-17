@@ -5,6 +5,7 @@
 
 use wasm_bindgen::prelude::*;
 
+use crate::score::{GRID, Reference};
 use crate::{Canvas, Stroke};
 
 #[wasm_bindgen]
@@ -23,6 +24,60 @@ pub fn validate_stroke(stroke_json: &str) -> Result<(), JsError> {
     let stroke: Stroke =
         serde_json::from_str(stroke_json).map_err(|e| JsError::new(&e.to_string()))?;
     crate::validate(&stroke).map_err(|e| JsError::new(&e))
+}
+
+/// A reference image fitted to a canvas: the JPEG painters see, the scoring
+/// grid, and the two anchor scores.
+#[wasm_bindgen(js_name = PreparedReference)]
+pub struct WasmReference {
+    jpeg: Vec<u8>,
+    grid: Vec<f32>,
+    blank_score: f32,
+    mean_color_score: f32,
+}
+
+#[wasm_bindgen(js_class = PreparedReference)]
+impl WasmReference {
+    #[wasm_bindgen(getter)]
+    pub fn jpeg(&self) -> Vec<u8> {
+        self.jpeg.clone()
+    }
+
+    /// OKLab grid, flattened (GRID * GRID * 3 floats).
+    #[wasm_bindgen(getter)]
+    pub fn grid(&self) -> Vec<f32> {
+        self.grid.clone()
+    }
+
+    #[wasm_bindgen(getter, js_name = blankScore)]
+    pub fn blank_score(&self) -> f32 {
+        self.blank_score
+    }
+
+    #[wasm_bindgen(getter, js_name = meanColorScore)]
+    pub fn mean_color_score(&self) -> f32 {
+        self.mean_color_score
+    }
+}
+
+/// Fit a PNG reference to a `width` x `height` canvas.
+#[wasm_bindgen(js_name = prepareReference)]
+pub fn prepare_reference(png: &[u8], width: u32, height: u32, jpeg_quality: u8) -> Result<WasmReference, JsError> {
+    let r = Reference::from_png(png, width as usize, height as usize).map_err(|e| JsError::new(&e))?;
+    let jpeg = crate::encode_jpeg(&r.rgb, width, height, jpeg_quality).map_err(|e| JsError::new(&e))?;
+    Ok(WasmReference {
+        jpeg,
+        grid: r.grid.iter().flatten().copied().collect(),
+        blank_score: r.blank_score,
+        mean_color_score: r.mean_color_score,
+    })
+}
+
+fn unflatten(grid: &[f32]) -> Result<Vec<[f32; 3]>, JsError> {
+    if grid.len() != GRID * GRID * 3 {
+        return Err(JsError::new("reference grid has the wrong size"));
+    }
+    Ok(grid.as_chunks::<3>().0.to_vec())
 }
 
 #[wasm_bindgen(js_name = Canvas)]
@@ -78,6 +133,11 @@ impl WasmCanvas {
     #[wasm_bindgen(js_name = renderJpeg)]
     pub fn render_jpeg(&self, quality: u8) -> Result<Vec<u8>, JsError> {
         self.0.render_jpeg(quality).map_err(|e| JsError::new(&e))
+    }
+
+    /// Score against a reference grid from `prepareReference`.
+    pub fn score(&self, grid: &[f32]) -> Result<f32, JsError> {
+        Ok(self.0.score(&unflatten(grid)?))
     }
 
     pub fn checkpoint(&self) -> Vec<u8> {

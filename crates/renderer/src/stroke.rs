@@ -2,8 +2,8 @@
 //!
 //! The Worker validates the agent's pixel-space stroke and normalizes it:
 //! point coordinates and brush size become fractions of the canvas width/height,
-//! so the same stroke list can be replayed at any resolution. This matches v1's
-//! `NormalizedStrokeData`, so v1 strokes replay unchanged.
+//! so the same stroke list can be replayed at any resolution. Fields this
+//! format doesn't use (such as `tip_shape` and `blend_mode`) are ignored.
 
 use serde::{Deserialize, Serialize};
 
@@ -47,7 +47,7 @@ pub struct Stroke {
 }
 
 impl Stroke {
-    /// Drawing speed in pixels per second (v1 heuristic when not given):
+    /// Drawing speed in pixels per second, estimated when not given:
     /// points spaced far apart relative to the brush were drawn quickly.
     pub fn effective_speed(&self, canvas_width: f64) -> f64 {
         if let Some(speed) = self.speed {

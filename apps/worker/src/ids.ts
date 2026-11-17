@@ -25,3 +25,22 @@ export function parseToken(token: string): { paintingId: string; secret: string 
   const m = TOKEN.exec(token);
   return m ? { paintingId: m[1] as string, secret: m[2] as string } : null;
 }
+
+/** Per-painting agent and owner keys, and series keys. */
+export const KEY_LENGTH = 32;
+export const KEY = /^[0-9A-Za-z]{32}$/;
+export const SERIES_ID = /^[0-9A-Za-z]{12}$/;
+
+/** SHA-256 hex digest. Keys are long random strings, so a plain hash is enough. */
+export async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** Compares two hex digests in time independent of where they differ. */
+export function digestsEqual(a: string, b: string): boolean {
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < Math.max(a.length, b.length); i++)
+    diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);
+  return diff === 0;
+}

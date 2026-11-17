@@ -24,3 +24,27 @@ export const CANVAS_IDLE_MS = 10 * 60_000;
 export const SNAPSHOT_QUALITY = 90;
 /** Persist a paint-buffer checkpoint every N strokes (and on completion). */
 export const CHECKPOINT_EVERY = 20;
+
+// --- Created paintings (POST /api/paintings) ---
+
+/** Canvas sizes for created paintings. A study is half the width, about a quarter of the strokes. */
+export const SIZES = { full: 1024, study: 512 } as const;
+export type SizeName = keyof typeof SIZES;
+/** Upper bound on a created painting's stroke budget. */
+export const MAX_STROKES_LIMIT = 2000;
+/** Default cap on created paintings in progress at once (override with MAX_CREATED_PAINTINGS). */
+export const DEFAULT_MAX_CREATED_PAINTINGS = 100;
+/** A created painting that receives no stroke within this long expires. */
+export const UNPAINTED_EXPIRY_MS = 60 * 60_000;
+/** Most strokes one submit_stroke call may carry. */
+export const MAX_BATCH = 50;
+/** Longest painter note kept per stroke. */
+export const NOTE_MAX = 280;
+
+/**
+ * How long a look's token stays valid: long enough for a model to plan a large
+ * batch before its first submit. Refreshed after every accepted batch.
+ */
+export function lookTtlMs(strokesRemaining: number): number {
+  return Math.min(2 * 60 * 60_000, TOKEN_TTL_MS + strokesRemaining * 30_000);
+}
