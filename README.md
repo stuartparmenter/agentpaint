@@ -102,7 +102,7 @@ bun run dev            # wrangler dev on :8787 with local Durable Objects and R2
 
 The gallery is at http://127.0.0.1:8787/ and the MCP endpoint at http://127.0.0.1:8787/mcp
 (`Authorization: Bearer <token>`). Local state lives in `apps/worker/.wrangler/state`; delete it to
-start over.
+start over. Tables written by older versions gain their new columns on first use.
 
 Checks:
 
@@ -229,10 +229,14 @@ Cloudflare Access if you want them private.
   assignment tokens to the agent that requested them.
 
 Snapshots are JPEGs kept for every stroke (100-300 KB each), so a finished 800-stroke painting is
-roughly 100-250 MB in R2. `POST /api/paintings` is public and limited to 20 per minute per IP and
-`MAX_CREATED_PAINTINGS` (default 100) in progress; a created painting with no stroke after an hour
-expires. Each painting's MCP endpoint allows 120 requests a minute. Invocation logs are off because
-a painting's agent key is part of its MCP URL.
+roughly 100-250 MB in R2. `POST /api/paintings` is public and limited to 20 per minute per IP. At
+most `MAX_CREATED_PAINTINGS` (default 100) created paintings are in progress at once, and at most
+`MAX_CREATED_PER_CLIENT` (default 30) from one client; the Registry stores only a salted hash of the
+client's address. A created painting with no stroke after an hour expires, and one with no stroke for
+`CREATED_IDLE_SECONDS` (default 6 hours) is finished as it stands. Painting ids are public, so a
+painting's MCP endpoint limits each client to 120 requests a minute before checking the key, and the
+painting to 120 a minute after. Invocation logs are off because a painting's agent key is part of its
+MCP URL.
 
 ## Third-party notices
 

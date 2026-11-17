@@ -2,6 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import {
   CANVAS_IDLE_MS,
   CHECKPOINT_EVERY,
+  createdIdleMs,
   lookTtlMs,
   MAX_BATCH,
   MEDIUM_DESCRIPTION,
@@ -12,6 +13,7 @@ import {
 import { digestsEqual, makeToken, randomId, sha256Hex, TOKEN_SECRET_LENGTH } from "./ids";
 import type { PaintingStats, PaintingStatus, PaintingSummary } from "./registry";
 import { Canvas, resetRenderer, validateStroke } from "./renderer";
+import { addMissingColumns } from "./schema";
 import { type BatchStrokeInput, checkBounds, normalize, scaledMinBrush } from "./stroke";
 import { currentPhase, isStyleName, STYLES, type Style } from "./styles";
 
@@ -166,6 +168,35 @@ export class Painting extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    // Paintings stored by older versions lack some columns and tables.
+    if (this.hasMeta()) {
+      addMissingColumns(this.sql, "meta", {
+        kind: "TEXT NOT NULL DEFAULT 'pool'",
+        strokes_per_look: "INTEGER NOT NULL DEFAULT 1",
+        phases: "TEXT NOT NULL DEFAULT 'enforced'",
+        reference: "TEXT",
+        agent_key_hash: "TEXT",
+        owner_key_hash: "TEXT",
+        looks: "INTEGER NOT NULL DEFAULT 0",
+      });
+      addMissingColumns(this.sql, "strokes", {
+        look: "INTEGER NOT NULL DEFAULT 0",
+        think_ms: "INTEGER",
+        score: "REAL",
+        note: "TEXT",
+        model: "TEXT",
+        effort: "TEXT",
+        input_tokens: "INTEGER",
+        output_tokens: "INTEGER",
+        prompt_hash: "TEXT",
+      });
+      addMissingColumns(this.sql, "tokens", {
+        expires_at: "INTEGER NOT NULL DEFAULT 0",
+        remaining: "INTEGER NOT NULL DEFAULT 0",
+        look: "INTEGER NOT NULL DEFAULT 0",
+      });
+      this.sql.exec("CREATE TABLE IF NOT EXISTS reference (grid BLOB NOT NULL)");
+    }
   }
 
   /** Create the painting's state from its registry entry (idempotent). */
@@ -514,6 +545,26 @@ export class Painting extends DurableObject<Env> {
         return;
       }
     }
+    const lastStroke = this.lastStrokeAt();
+    if (
+      meta.kind === "created" &&
+      meta.status === "active" &&
+      lastStroke !== null &&
+      now >= lastStroke + createdIdleMs(this.env.CREATED_IDLE_SECONDS) &&
+      this.inflight === 0
+    ) {
+      // Abandoned: finish it as it stands, dated at its last stroke.
+      this.sql.exec("UPDATE meta SET status = 'done', finished_at = ?", lastStroke);
+      this.sql.exec("UPDATE tokens SET remaining = 0");
+      try {
+        if (this.canvas) await this.putCheckpoint(meta.id, this.canvas);
+      } catch (e) {
+        console.error("checkpoint at idle finish failed", meta.id, e); // replay from scratch still works
+      }
+      await this.reportStats(lastStroke);
+      this.unload();
+      return;
+    }
     if (this.canvas) {
       const idleFor = now - this.lastActivity;
       if (this.inflight === 0 && !this.loading && idleFor >= this.idleMs()) {
@@ -694,14 +745,26 @@ export class Painting extends DurableObject<Env> {
     }
   }
 
-  /** One alarm serves both the idle unload and the unpainted expiry; set it for whichever is due first. */
+  private lastStrokeAt(): number | null {
+    return this.sql.exec<{ at: number | null }>("SELECT MAX(created_at) AS at FROM strokes").one().at;
+  }
+
+  /**
+   * One alarm serves the idle unload, the unpainted expiry and the abandoned
+   * finish; set it for whichever is due first.
+   */
   private async scheduleAlarm() {
     const meta = this.meta();
     if (!meta) return;
     const due: number[] = [];
     if (this.canvas) due.push(this.lastActivity + this.idleMs());
-    if (meta.kind === "created" && meta.status === "active" && meta.version === 0) {
-      due.push(meta.created_at + UNPAINTED_EXPIRY_MS);
+    if (meta.kind === "created" && meta.status === "active") {
+      const lastStroke = this.lastStrokeAt();
+      due.push(
+        lastStroke === null
+          ? meta.created_at + UNPAINTED_EXPIRY_MS
+          : lastStroke + createdIdleMs(this.env.CREATED_IDLE_SECONDS),
+      );
     }
     if (due.length) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1000, Math.min(...due)));
   }
@@ -712,11 +775,14 @@ export class Painting extends DurableObject<Env> {
     return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : CANVAS_IDLE_MS;
   }
 
+  private hasMeta(): boolean {
+    return (
+      this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'").toArray().length > 0
+    );
+  }
+
   private meta(): Meta | undefined {
-    const exists = this.sql
-      .exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
-      .toArray().length;
-    return exists ? this.sql.exec<Meta>("SELECT * FROM meta").toArray()[0] : undefined;
+    return this.hasMeta() ? this.sql.exec<Meta>("SELECT * FROM meta").toArray()[0] : undefined;
   }
 
   /** Recover from a renderer exception: reset the WASM instance if it trapped, drop the canvas. */

@@ -129,7 +129,7 @@ app.post("/api/paintings", tooLarge, async (c) => {
       400,
     );
   }
-  const result = await createPainting(c.env, input.data, new URL(c.req.url).origin);
+  const result = await createPainting(c.env, input.data, new URL(c.req.url).origin, ip);
   if ("error" in result) return c.json({ error: result.error }, result.status);
   return c.json(result, 201, { "Cache-Control": "no-store" });
 });
@@ -231,11 +231,16 @@ async function scoped(c: AppContext, id: string, key: string | undefined) {
   if (!PAINTING_ID.test(id) || !key || !KEY.test(key)) {
     return c.json({ error: "unauthorized" }, 401, { "WWW-Authenticate": 'Bearer realm="agentpaint"' });
   }
-  const { success } = await c.env.SCOPED_LIMITER.limit({ key: id });
-  if (!success) return c.json({ error: "rate limited" }, 429, { "Retry-After": "60" });
+  // Painting ids are public, so requests are limited per client before the key
+  // is checked, and the painting's own limit is charged only once it is.
+  const ip = c.req.header("CF-Connecting-IP") ?? "local";
+  const client = await c.env.SCOPED_CLIENT_LIMITER.limit({ key: `${ip}:${id}` });
+  if (!client.success) return c.json({ error: "rate limited" }, 429, { "Retry-After": "60" });
   if (!(await c.env.PAINTING.getByName(id).verifyAgentKey(key))) {
     return c.json({ error: "unauthorized" }, 401, { "WWW-Authenticate": 'Bearer realm="agentpaint"' });
   }
+  const painting = await c.env.SCOPED_LIMITER.limit({ key: id });
+  if (!painting.success) return c.json({ error: "rate limited" }, 429, { "Retry-After": "60" });
   const parsed = await rpcBody(c);
   if (parsed instanceof Response) return parsed;
   return handleScopedMcp(c.req.raw, c.env, id, parsed.body);

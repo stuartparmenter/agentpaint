@@ -36,6 +36,20 @@ export const MAX_STROKES_LIMIT = 2000;
 export const DEFAULT_MAX_CREATED_PAINTINGS = 100;
 /** A created painting that receives no stroke within this long expires. */
 export const UNPAINTED_EXPIRY_MS = 60 * 60_000;
+
+/**
+ * A created painting with no stroke for this long is finished as it stands.
+ * CREATED_IDLE_SECONDS overrides it (mainly for testing).
+ */
+export const CREATED_IDLE_MS = 6 * 60 * 60_000;
+
+export function createdIdleMs(override: string | undefined): number {
+  const seconds = Number(override);
+  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : CREATED_IDLE_MS;
+}
+
+/** Default cap on one client's created paintings in progress (override with MAX_CREATED_PER_CLIENT). */
+export const DEFAULT_MAX_CREATED_PER_CLIENT = 30;
 /** Most strokes one submit_stroke call may carry. */
 export const MAX_BATCH = 50;
 /** Longest painter note kept per stroke. */

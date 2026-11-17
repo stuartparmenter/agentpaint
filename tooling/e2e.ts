@@ -208,8 +208,13 @@ for (let i = 0; i < 3; i++) {
 check("repeated assignments keep painting", strokes.every(Boolean), strokes);
 
 // --- Gallery API ---
-const list = (await (await fetch(`${base}/api/paintings`)).json()) as { id: string; strokeCount: number }[];
-const listed = list.find((p) => p.id === paintingId);
+// The list is cached for a few seconds, so a painting made just now may not be in it yet.
+let listed: { id: string; strokeCount: number } | undefined;
+for (let attempt = 0; attempt < 4 && !listed?.strokeCount; attempt++) {
+  if (attempt) await Bun.sleep(2000);
+  const list = (await (await fetch(`${base}/api/paintings`)).json()) as { id: string; strokeCount: number }[];
+  listed = list.find((p) => p.id === paintingId);
+}
 check("gallery lists the painting with its stroke count", (listed?.strokeCount ?? 0) >= 1, listed);
 const snap = await fetch(`${base}/api/paintings/${paintingId}/v/1`);
 check(
@@ -240,10 +245,18 @@ await client.close();
 
 // --- Created paintings and the scoped endpoint ---------------------------------
 
-async function create(settings: Record<string, unknown>) {
+// A random documentation address (TEST-NET-3). Under `wrangler dev` it stands in
+// for the client's address, so each creation counts against its own per-client
+// cap and repeated runs don't accumulate; behind Cloudflare the header is
+// replaced with the real address.
+function testAddress() {
+  return `203.0.113.${1 + Math.floor(Math.random() * 254)}`;
+}
+
+async function create(settings: Record<string, unknown>, address = testAddress()) {
   const res = await fetch(`${base}/api/paintings`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", "CF-Connecting-IP": address },
     body: JSON.stringify(settings),
   });
   return { status: res.status, body: (await res.json()) as Json };
@@ -561,6 +574,30 @@ check(
   crossed.json,
 );
 await poolClient.close();
+
+// Painting ids are public: a stranger sending bad keys gets limited, without
+// using up the painting's own allowance.
+const target = await create({ style: "landscape", size: "study", max_strokes: 5, strokes_per_look: 5 });
+const ping = { jsonrpc: "2.0", id: 1, method: "ping" };
+let strangerStatus = 0;
+for (let i = 0; i < 125 && strangerStatus !== 429; i++) {
+  const res = await fetch(`${base}/mcp/p/${target.body.id}/${"0".repeat(32)}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json, text/event-stream",
+      "CF-Connecting-IP": "192.0.2.66",
+    },
+    body: JSON.stringify(ping),
+  });
+  strangerStatus = res.status;
+  await res.body?.cancel();
+}
+check("a client sending bad keys is rate limited", strangerStatus === 429, strangerStatus);
+const keyHolder = await connectUrl(target.body.mcp_url, { "CF-Connecting-IP": "192.0.2.77" });
+const ownerLook = await scopedCall(keyHolder, "get_assignment");
+check("the agent key still works for its own client", !!ownerLook.json?.token, ownerLook.json);
+await keyHolder.close();
 
 const paintingPage = await fetch(`${base}/p/${p.id}`);
 check(

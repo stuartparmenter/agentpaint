@@ -42,10 +42,17 @@
   "ratelimits": [
     { "name": "MCP_LIMITER", "namespace_id": "2001", "simple": { "limit": 120, "period": 60 } },
     { "name": "SCOPED_LIMITER", "namespace_id": "2003", "simple": { "limit": 120, "period": 60 } },
+    { "name": "SCOPED_CLIENT_LIMITER", "namespace_id": "2007", "simple": { "limit": 120, "period": 60 } },
     { "name": "CREATE_LIMITER", "namespace_id": "2005", "simple": { "limit": 20, "period": 60 } }
   ],
 
-  "vars": { "MAX_ACTIVE_PAINTINGS": "6", "MAX_CREATED_PAINTINGS": "100", "CANVAS_IDLE_SECONDS": "600" },
+  "vars": {
+    "MAX_ACTIVE_PAINTINGS": "6",
+    "MAX_CREATED_PAINTINGS": "100",
+    "MAX_CREATED_PER_CLIENT": "30",
+    "CANVAS_IDLE_SECONDS": "600",
+    "CREATED_IDLE_SECONDS": "21600"
+  },
   // MCP_TOKENS: comma-separated `name:token` pairs (tokens >= 32 chars). Locally, set it in .dev.vars;
   // in production `wrangler secret put MCP_TOKENS`; for previews
   // `wrangler preview base-config secret put MCP_TOKENS`.
@@ -54,11 +61,18 @@
   // Worker Previews (one per branch, built by Workers Builds). Each Preview gets
   // its own Durable Objects automatically; snapshots go to a separate bucket.
   "previews": {
-    "vars": { "MAX_ACTIVE_PAINTINGS": "3", "MAX_CREATED_PAINTINGS": "30", "CANVAS_IDLE_SECONDS": "600" },
+    "vars": {
+      "MAX_ACTIVE_PAINTINGS": "3",
+      "MAX_CREATED_PAINTINGS": "30",
+      "MAX_CREATED_PER_CLIENT": "10",
+      "CANVAS_IDLE_SECONDS": "600",
+      "CREATED_IDLE_SECONDS": "21600"
+    },
     "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "agentpaint-snapshots-preview" }],
     "ratelimits": [
       { "name": "MCP_LIMITER", "namespace_id": "2002", "simple": { "limit": 120, "period": 60 } },
       { "name": "SCOPED_LIMITER", "namespace_id": "2004", "simple": { "limit": 120, "period": 60 } },
+      { "name": "SCOPED_CLIENT_LIMITER", "namespace_id": "2008", "simple": { "limit": 120, "period": 60 } },
       { "name": "CREATE_LIMITER", "namespace_id": "2006", "simple": { "limit": 20, "period": 60 } }
     ]
   }

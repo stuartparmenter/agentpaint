@@ -1,4 +1,10 @@
-import { DEFAULT_MAX_CREATED_PAINTINGS, SIZES, type SizeName, SNAPSHOT_QUALITY } from "./config";
+import {
+  DEFAULT_MAX_CREATED_PAINTINGS,
+  DEFAULT_MAX_CREATED_PER_CLIENT,
+  SIZES,
+  type SizeName,
+  SNAPSHOT_QUALITY,
+} from "./config";
 import { KEY_LENGTH, randomId, sha256Hex } from "./ids";
 import { canvasSize, findReference } from "./references";
 import type { CreateSettings, PaintingSummary } from "./registry";
@@ -18,7 +24,7 @@ export interface Created {
   settings: PaintingSummary;
 }
 
-export type CreateError = { status: 400 | 403 | 404 | 409 | 500; error: string };
+export type CreateError = { status: 400 | 403 | 404 | 409 | 429 | 500; error: string };
 
 interface PreparedReference {
   jpeg: Uint8Array;
@@ -60,16 +66,20 @@ function prepare(env: Env, origin: string, file: string, width: number, height: 
   return entry;
 }
 
-function maxCreated(env: Env): number {
-  const n = Number(env.MAX_CREATED_PAINTINGS);
-  return Number.isInteger(n) && n > 0 ? n : DEFAULT_MAX_CREATED_PAINTINGS;
+function positiveInt(value: string | undefined, fallback: number): number {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
-/** Create a painting from validated input. `origin` is the site origin, for URLs. */
+/**
+ * Create a painting from validated input. `origin` is the site origin, for URLs;
+ * `client` is the caller's address, for the per-client cap.
+ */
 export async function createPainting(
   env: Env,
   input: CreateInput,
   origin: string,
+  client: string,
 ): Promise<Created | CreateError> {
   const style = STYLES[input.style as keyof typeof STYLES];
   const reference = input.reference ? findReference(input.reference) : undefined;
@@ -122,11 +132,19 @@ export async function createPainting(
     settings,
     series,
     { key: seriesKey, keyHash: await sha256Hex(seriesKey) },
-    maxCreated(env),
+    client,
+    {
+      total: positiveInt(env.MAX_CREATED_PAINTINGS, DEFAULT_MAX_CREATED_PAINTINGS),
+      perClient: positiveInt(env.MAX_CREATED_PER_CLIENT, DEFAULT_MAX_CREATED_PER_CLIENT),
+    },
   );
   if (!result.ok) {
-    const status =
-      result.error === "series_not_found" ? 404 : result.error === "series_key_mismatch" ? 403 : 409;
+    const status = {
+      series_not_found: 404,
+      series_key_mismatch: 403,
+      too_many_paintings: 409,
+      too_many_paintings_for_client: 429,
+    }[result.error] as CreateError["status"];
     return { status, error: result.error };
   }
 

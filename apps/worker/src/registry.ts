@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
-import { ARCHIVE_AFTER_MS, CANVAS_SIZE, LEASE_MS, MEDIUM, type SizeName } from "./config";
-import { digestsEqual, PAINTING_ID_LENGTH, randomId } from "./ids";
+import { ARCHIVE_AFTER_MS, CANVAS_SIZE, createdIdleMs, LEASE_MS, MEDIUM, type SizeName } from "./config";
+import { digestsEqual, KEY_LENGTH, PAINTING_ID_LENGTH, randomId, sha256Hex } from "./ids";
+import { addMissingColumns } from "./schema";
 import { pick, STYLE_NAMES, STYLES, type StyleName } from "./styles";
 import type {
   CreateSettings,
@@ -83,7 +84,20 @@ function toSummary(r: Row): PaintingSummary {
 
 export type CreateResult =
   | { ok: true; painting: PaintingSummary; seriesId: string; seriesKey: string | null }
-  | { ok: false; error: "series_not_found" | "series_key_mismatch" | "too_many_paintings" };
+  | {
+      ok: false;
+      error:
+        | "series_not_found"
+        | "series_key_mismatch"
+        | "too_many_paintings"
+        | "too_many_paintings_for_client";
+    };
+
+/** Caps on created paintings in progress: across all clients, and per client. */
+export interface CreatedCaps {
+  total: number;
+  perClient: number;
+}
 
 /**
  * The global index of paintings (a single instance, named "registry").
@@ -123,10 +137,33 @@ export class Registry extends DurableObject<Env> {
       mean_think_ms REAL,
       tokens_in INTEGER NOT NULL DEFAULT 0,
       tokens_out INTEGER NOT NULL DEFAULT 0,
-      models TEXT NOT NULL DEFAULT '[]'
+      models TEXT NOT NULL DEFAULT '[]',
+      creator TEXT
     )`);
+    addMissingColumns(this.sql, "paintings", {
+      kind: "TEXT NOT NULL DEFAULT 'pool'",
+      series_id: "TEXT",
+      size: "TEXT",
+      strokes_per_look: "INTEGER NOT NULL DEFAULT 1",
+      phases: "TEXT NOT NULL DEFAULT 'enforced'",
+      reference: "TEXT",
+      blank_score: "REAL",
+      mean_color_score: "REAL",
+      last_score: "REAL",
+      looks: "INTEGER NOT NULL DEFAULT 0",
+      mean_think_ms: "REAL",
+      tokens_in: "INTEGER NOT NULL DEFAULT 0",
+      tokens_out: "INTEGER NOT NULL DEFAULT 0",
+      models: "TEXT NOT NULL DEFAULT '[]'",
+      creator: "TEXT",
+    });
     this.sql.exec("CREATE INDEX IF NOT EXISTS paintings_status ON paintings (kind, status, last_stroke_at)");
     this.sql.exec("CREATE INDEX IF NOT EXISTS paintings_series ON paintings (series_id)");
+    // Salt for hashing client addresses; it never leaves this object.
+    this.sql.exec("CREATE TABLE IF NOT EXISTS salt (value TEXT NOT NULL)");
+    if (!this.sql.exec("SELECT 1 FROM salt").toArray().length) {
+      this.sql.exec("INSERT INTO salt (value) VALUES (?)", randomId(KEY_LENGTH));
+    }
     this.sql.exec(`CREATE TABLE IF NOT EXISTS series (
       id TEXT PRIMARY KEY, key_hash TEXT NOT NULL, created_at INTEGER NOT NULL
     )`);
@@ -194,14 +231,18 @@ export class Registry extends DurableObject<Env> {
   /**
    * Record a painting created through the API, in a new series or (with that
    * series' key hash) an existing one. Returns the series key only when the
-   * series is new.
+   * series is new. `client` is the caller's address; only a salted hash of it is
+   * stored, to apply the per-client cap.
    */
   async createPainting(
     settings: CreateSettings,
     series: { id: string; keyHash: string } | null,
     newSeriesKey: { key: string; keyHash: string },
-    maxCreated: number,
+    client: string,
+    caps: CreatedCaps,
   ): Promise<CreateResult> {
+    const salt = this.sql.exec<{ value: string }>("SELECT value FROM salt").one().value;
+    const creator = await sha256Hex(`${salt}:${client}`);
     const now = Date.now();
     let seriesId: string;
     let seriesKey: string | null = null;
@@ -217,10 +258,22 @@ export class Registry extends DurableObject<Env> {
       seriesKey = newSeriesKey.key;
     }
 
-    const active = this.sql
-      .exec<{ n: number }>("SELECT COUNT(*) AS n FROM paintings WHERE kind = 'created' AND status = 'active'")
+    // Paintings idle past createdIdleMs are finished by their own alarm; leave
+    // them out of the count even if that hasn't happened yet.
+    const inProgress = `kind = 'created' AND status = 'active' AND COALESCE(last_stroke_at, created_at) > ?`;
+    const since = now - createdIdleMs(this.env.CREATED_IDLE_SECONDS);
+    const mine = this.sql
+      .exec<{ n: number }>(
+        `SELECT COUNT(*) AS n FROM paintings WHERE ${inProgress} AND creator = ?`,
+        since,
+        creator,
+      )
       .one().n;
-    if (active >= maxCreated) return { ok: false, error: "too_many_paintings" };
+    if (mine >= caps.perClient) return { ok: false, error: "too_many_paintings_for_client" };
+    const active = this.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM paintings WHERE ${inProgress}`, since)
+      .one().n;
+    if (active >= caps.total) return { ok: false, error: "too_many_paintings" };
 
     if (!series) {
       this.sql.exec(
@@ -233,8 +286,8 @@ export class Registry extends DurableObject<Env> {
     const id = randomId(PAINTING_ID_LENGTH);
     this.sql.exec(
       `INSERT INTO paintings (id, kind, status, style, prompt, medium, width, height, max_strokes, created_at,
-        series_id, size, strokes_per_look, phases, reference, blank_score, mean_color_score)
-       VALUES (?, 'created', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        series_id, size, strokes_per_look, phases, reference, blank_score, mean_color_score, creator)
+       VALUES (?, 'created', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       settings.style,
       settings.prompt,
@@ -250,6 +303,7 @@ export class Registry extends DurableObject<Env> {
       settings.reference,
       settings.blankScore,
       settings.meanColorScore,
+      creator,
     );
     return { ok: true, painting: this.row(id) as PaintingSummary, seriesId, seriesKey };
   }
