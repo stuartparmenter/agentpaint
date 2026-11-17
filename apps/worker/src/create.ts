@@ -1,16 +1,16 @@
 import {
   DEFAULT_MAX_CREATED_PAINTINGS,
   DEFAULT_MAX_CREATED_PER_CLIENT,
+  envNumber,
   SIZES,
-  type SizeName,
   SNAPSHOT_QUALITY,
 } from "./config";
 import { KEY_LENGTH, randomId, sha256Hex } from "./ids";
 import { canvasSize, findReference } from "./references";
-import type { CreateSettings, PaintingSummary } from "./registry";
 import { prepareReference } from "./renderer";
 import { type CreateInput, studyBudget } from "./settings";
 import { STYLES } from "./styles";
+import type { CreateSettings, PaintingSummary } from "./types";
 
 export interface Created {
   id: string;
@@ -66,11 +66,6 @@ function prepare(env: Env, origin: string, file: string, width: number, height: 
   return entry;
 }
 
-function positiveInt(value: string | undefined, fallback: number): number {
-  const n = Number(value);
-  return Number.isInteger(n) && n > 0 ? n : fallback;
-}
-
 /**
  * Create a painting from validated input. `origin` is the site origin, for URLs;
  * `client` is the caller's address, for the per-client cap.
@@ -81,13 +76,13 @@ export async function createPainting(
   origin: string,
   client: string,
 ): Promise<Created | CreateError> {
-  const style = STYLES[input.style as keyof typeof STYLES];
+  const style = STYLES[input.style];
   const reference = input.reference ? findReference(input.reference) : undefined;
   if (input.reference && !reference) return { status: 400, error: `unknown reference '${input.reference}'` };
   if (input.series && !input.series_key)
     return { status: 400, error: "series_key is required to add to a series" };
 
-  const size = input.size as SizeName;
+  const size = input.size;
   const { width, height } = canvasSize(SIZES[size], reference);
   const maxStrokes =
     input.max_strokes ?? (size === "study" ? studyBudget(style.maxStrokes) : style.maxStrokes);
@@ -134,8 +129,8 @@ export async function createPainting(
     { key: seriesKey, keyHash: await sha256Hex(seriesKey) },
     client,
     {
-      total: positiveInt(env.MAX_CREATED_PAINTINGS, DEFAULT_MAX_CREATED_PAINTINGS),
-      perClient: positiveInt(env.MAX_CREATED_PER_CLIENT, DEFAULT_MAX_CREATED_PER_CLIENT),
+      total: envNumber(env.MAX_CREATED_PAINTINGS, DEFAULT_MAX_CREATED_PAINTINGS),
+      perClient: envNumber(env.MAX_CREATED_PER_CLIENT, DEFAULT_MAX_CREATED_PER_CLIENT),
     },
   );
   if (!result.ok) {

@@ -4,12 +4,13 @@ export interface LookMeta {
   canvas_width: number;
   canvas_height: number;
   min_brush_size?: number;
+  max_brush_size: number;
 }
 
 const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 
 export function randomStroke(meta: LookMeta) {
-  const maxSize = Math.round((200 * meta.canvas_width) / 1024);
+  const maxSize = meta.max_brush_size;
   const minSize = Math.min(maxSize, meta.min_brush_size ?? Math.max(2, maxSize / 20));
   const size = rand(minSize, Math.min(maxSize, Math.max(minSize * 1.6, minSize + 10)));
   let x = rand(0, meta.canvas_width);

@@ -6,7 +6,8 @@ import type { StyleName } from "./styles";
 export type PaintingStatus = "active" | "done" | "archived" | "expired";
 /** `pool` paintings are made by the pooled endpoint's leases; `created` ones by POST /api/paintings. */
 export type PaintingKind = "pool" | "created";
-export type PhaseMode = "off" | "guidance" | "enforced";
+export const PHASE_MODES = ["off", "guidance", "enforced"] as const;
+export type PhaseMode = (typeof PHASE_MODES)[number];
 
 export interface PaintingSummary {
   id: string;
@@ -14,7 +15,6 @@ export interface PaintingSummary {
   status: PaintingStatus;
   style: StyleName;
   prompt: string | null;
-  medium: string;
   width: number;
   height: number;
   strokeCount: number;

@@ -1,4 +1,11 @@
 export const CANVAS_SIZE = 1024;
+
+/** A positive number from an environment variable, or `fallback` when it is unset or invalid. */
+export function envNumber(value: string | undefined, fallback: number): number {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
 export const MEDIUM = "acrylic";
 export const MEDIUM_DESCRIPTION =
   "Acrylic paint. Dries fast: each stroke lands on dry paint. Layers cleanly: an opaque stroke covers what is underneath. " +
@@ -16,10 +23,13 @@ export const DEFAULT_MAX_ACTIVE_PAINTINGS = 6;
 export const LEASE_MS = 3 * 60_000;
 /** Assignment tokens expire after this long. */
 export const TOKEN_TTL_MS = 10 * 60_000;
-/** Done paintings become archived after this long. */
+/** Done pool paintings read as archived after this long. */
 export const ARCHIVE_AFTER_MS = 5 * 60_000;
-/** Free a painting's canvas (~10 MB of WASM memory) after this long without requests. */
-export const CANVAS_IDLE_MS = 10 * 60_000;
+/**
+ * Free a painting's canvas (~10 MB of WASM memory) after this many seconds without
+ * requests. CANVAS_IDLE_SECONDS overrides it (mainly for testing).
+ */
+export const DEFAULT_CANVAS_IDLE_SECONDS = 10 * 60;
 /** JPEG quality for snapshots (the canvas weave makes PNGs ~8x larger). */
 export const SNAPSHOT_QUALITY = 90;
 /** Persist a paint-buffer checkpoint every N strokes (and on completion). */
@@ -38,14 +48,13 @@ export const DEFAULT_MAX_CREATED_PAINTINGS = 100;
 export const UNPAINTED_EXPIRY_MS = 60 * 60_000;
 
 /**
- * A created painting with no stroke for this long is finished as it stands.
+ * A created painting with no stroke for this many seconds is finished as it stands.
  * CREATED_IDLE_SECONDS overrides it (mainly for testing).
  */
-export const CREATED_IDLE_MS = 6 * 60 * 60_000;
+export const DEFAULT_CREATED_IDLE_SECONDS = 6 * 60 * 60;
 
-export function createdIdleMs(override: string | undefined): number {
-  const seconds = Number(override);
-  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : CREATED_IDLE_MS;
+export function createdIdleMs(env: { CREATED_IDLE_SECONDS?: string }): number {
+  return envNumber(env.CREATED_IDLE_SECONDS, DEFAULT_CREATED_IDLE_SECONDS) * 1000;
 }
 
 /** Default cap on one client's created paintings in progress (override with MAX_CREATED_PER_CLIENT). */

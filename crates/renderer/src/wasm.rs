@@ -101,16 +101,6 @@ impl WasmCanvas {
     }
 
     #[wasm_bindgen(getter)]
-    pub fn width(&self) -> u32 {
-        self.0.width()
-    }
-
-    #[wasm_bindgen(getter)]
-    pub fn height(&self) -> u32 {
-        self.0.height()
-    }
-
-    #[wasm_bindgen(getter)]
     pub fn version(&self) -> u32 {
         self.0.version()
     }
@@ -123,11 +113,6 @@ impl WasmCanvas {
         self.0
             .apply_stroke(&stroke, seed)
             .map_err(|e| JsError::new(&e))
-    }
-
-    #[wasm_bindgen(js_name = renderPng)]
-    pub fn render_png(&self) -> Result<Vec<u8>, JsError> {
-        self.0.render_png().map_err(|e| JsError::new(&e))
     }
 
     #[wasm_bindgen(js_name = renderJpeg)]

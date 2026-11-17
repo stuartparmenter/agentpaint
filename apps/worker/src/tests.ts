@@ -1,15 +1,16 @@
 // Reference tests: every created painting made against a built-in reference,
 // grouped into conditions whose runs can be compared with each other.
 
+import type { SizeName } from "./config";
 import type { ReferenceImage } from "./references";
-import type { SeriesCell } from "./series";
+import { isFinished, type SeriesCell } from "./series";
 import type { PaintingSummary } from "./types";
 
 /** Settings that must match for two runs' scores to be comparable. */
 export interface Condition {
   key: string;
   style: string;
-  size: string | null;
+  size: SizeName;
   width: number;
   height: number;
   maxStrokes: number;
@@ -42,11 +43,10 @@ export interface TestDetail {
   table: SeriesCell[];
 }
 
+/** Key of a created painting's condition (created paintings always have a size). */
 export function conditionKey(p: PaintingSummary): string {
-  return `${p.style}-${p.size ?? "custom"}-${p.width}x${p.height}-${p.maxStrokes}-${p.phases}`;
+  return `${p.style}-${p.size}-${p.width}x${p.height}-${p.maxStrokes}-${p.phases}`;
 }
-
-const isFinished = (p: PaintingSummary) => p.status === "done" || p.status === "archived";
 
 /** Conditions present among `paintings`, most runs first. */
 export function conditions(paintings: PaintingSummary[]): Condition[] {
@@ -59,7 +59,7 @@ export function conditions(paintings: PaintingSummary[]): Condition[] {
       byKey.set(key, {
         key,
         style: p.style,
-        size: p.size,
+        size: p.size as SizeName,
         width: p.width,
         height: p.height,
         maxStrokes: p.maxStrokes,

@@ -366,11 +366,6 @@ table.data th.num {
 table.data tr.current td {
   background: color-mix(in srgb, var(--accent) 12%, transparent);
 }
-table.data th.wrap {
-  white-space: normal;
-  min-width: 96px;
-  overflow-wrap: anywhere;
-}
 table.data td.note {
   min-width: 160px;
 }

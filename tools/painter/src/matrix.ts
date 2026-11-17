@@ -9,11 +9,10 @@
 import { parseArgs } from "node:util";
 import Anthropic from "@anthropic-ai/sdk";
 import { EFFORTS, type Effort } from "./capabilities";
+import { fail, positiveInt } from "./cli";
+import type { Json } from "./mcp";
 import { type PaintSummary, paintScoped } from "./paint";
 import { PROMPT_HASH } from "./prompt";
-
-// biome-ignore lint/suspicious/noExplicitAny: JSON from tool results and the API is untyped.
-type Json = Record<string, any>;
 
 const { values: args } = parseArgs({
   options: {
@@ -56,18 +55,12 @@ if (args.help) {
   process.exit(0);
 }
 
-function fail(message: string): never {
-  console.error(message);
-  process.exit(1);
-}
-
 const origin = args.url.replace(/\/$/, "");
 const effort = args.effort as Effort;
 if (!EFFORTS.includes(effort)) fail(`--effort must be one of ${EFFORTS.join(", ")}`);
-const repeat = Number(args.repeat);
-const parallel = Number(args.parallel);
-if (!Number.isInteger(repeat) || repeat < 1) fail("--repeat must be a positive integer");
-if (!Number.isInteger(parallel) || parallel < 1) fail("--parallel must be a positive integer");
+const repeat = positiveInt(args.repeat, "--repeat");
+const parallel = positiveInt(args.parallel, "--parallel");
+const thinkingBudget = positiveInt(args["thinking-budget"], "--thinking-budget");
 
 const styles = (await (await fetch(`${origin}/api/styles`)).json()) as {
   name: string;
@@ -75,7 +68,9 @@ const styles = (await (await fetch(`${origin}/api/styles`)).json()) as {
 }[];
 const style = styles.find((s) => s.name === args.style) ?? fail(`unknown style ${args.style}`);
 const size = args.size === "full" ? "full" : "study";
-const budget = args["max-strokes"] ? Number(args["max-strokes"]) : style.max_strokes[size];
+const budget = args["max-strokes"]
+  ? positiveInt(args["max-strokes"], "--max-strokes")
+  : style.max_strokes[size];
 const looks = args.looks.split(",").map((l) => {
   const n = l.trim() === "all" ? budget : Number(l);
   if (!Number.isInteger(n) || n < 1) fail(`bad look setting "${l}"`);
@@ -168,7 +163,6 @@ await Bun.write(
   ),
 );
 console.log(`Keys saved to ${keysFile.pathname}`);
-console.log(`Series ${origin}/s/${series.id}`);
 
 const anthropic = args.random ? null : new Anthropic();
 const queue = [...cells];
@@ -182,7 +176,7 @@ await Promise.all(
           random: args.random,
           model: cell.model,
           effort,
-          thinkingBudget: Number(args["thinking-budget"]),
+          thinkingBudget,
           context: args["keep-context"] ? "keep" : "fresh",
           maxLooks: budget + 10,
           log: (line) => console.log(`${tag} ${line}`),
@@ -196,8 +190,8 @@ await Promise.all(
   }),
 );
 
-// Results come from the server's record; wait out the endpoint's 4-second edge cache.
-await Bun.sleep(5000);
+// Results come from the server's record; wait out the endpoint's 5-second edge cache.
+await Bun.sleep(6000);
 const result = (await (await fetch(`${origin}/api/series/${series.id}`)).json()) as {
   paintings: { blankScore: number | null; meanColorScore: number | null }[];
   table: Record<string, number | string | null>[];

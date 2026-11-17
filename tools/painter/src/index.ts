@@ -15,6 +15,7 @@
 import { parseArgs } from "node:util";
 import Anthropic from "@anthropic-ai/sdk";
 import { EFFORTS, type Effort } from "./capabilities";
+import { fail, positiveInt } from "./cli";
 import { paintScoped } from "./paint";
 import { runPool } from "./pool";
 import { PROMPT_HASH } from "./prompt";
@@ -51,17 +52,6 @@ if (args.help) {
   --strokes          total strokes across all workers (default 10)
   --workers          concurrent painters (default 1)`);
   process.exit(0);
-}
-
-function fail(message: string): never {
-  console.error(message);
-  process.exit(1);
-}
-
-function positiveInt(value: string | undefined, name: string): number {
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 1) fail(`${name} must be a positive integer`);
-  return n;
 }
 
 const url = new URL(args.url ?? process.env.AGENTPAINT_MCP_URL ?? "http://127.0.0.1:8787/mcp");

@@ -40,8 +40,8 @@ export async function sha256Hex(value: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-/** Compares two hex digests in time independent of where they differ. */
-export function digestsEqual(a: string, b: string): boolean {
+/** Compares two strings (keys, tokens, digests) in time independent of where they differ. */
+export function constantTimeEqual(a: string, b: string): boolean {
   let diff = a.length ^ b.length;
   for (let i = 0; i < Math.max(a.length, b.length); i++)
     diff |= (a.charCodeAt(i) || 0) ^ (b.charCodeAt(i) || 0);

@@ -3,10 +3,11 @@
 
 import { LineChart } from "./chart.js";
 import {
+  anchorRefs,
   attribution,
-  conditionKey,
   copyField,
   el,
+  fail,
   fmtDate,
   fmtInt,
   fmtScore,
@@ -15,79 +16,58 @@ import {
   idFromPath,
   loadJson,
   loadReferences,
+  lookBadge,
   lookLabel,
   paintingKey,
-  preload,
-  similarity,
+  playback,
+  poll,
   snapshotUrl,
   statusBadge,
+  table,
 } from "./common.js";
 import { prefillQuery } from "./create-form.js";
 
 const id = idFromPath();
 const page = document.getElementById("page");
+const api = `/api/paintings/${encodeURIComponent(id)}`;
+const loadStrokes = () => getJson(`${api}/strokes`).catch(() => []);
 
-const state = {
-  painting: null,
-  strokes: [],
-  viewing: 0,
-  playing: false,
-  gen: 0,
-  timer: null,
-};
+const state = { painting: null, strokes: [], viewing: 0, stopPolling: null };
 const ui = {};
 
-async function load() {
-  const [painting, strokes] = await Promise.all([
-    getJson(`/api/paintings/${encodeURIComponent(id)}`),
-    getJson(`/api/paintings/${encodeURIComponent(id)}/strokes`).catch(() => []),
-  ]);
-  return { painting, strokes: Array.isArray(strokes) ? strokes : [] };
-}
-
 async function init() {
-  if (!id) return fail("No painting id in the address.");
-  let data;
+  if (!id) return fail("No painting id in the address.", "/", "Back to the gallery");
   try {
-    data = await load();
+    [state.painting, state.strokes] = await Promise.all([getJson(api), loadStrokes()]);
   } catch (e) {
-    return fail(
-      e.status === 404 ? "This painting doesn't exist." : `Couldn't load the painting (${e.message}).`,
-    );
+    const message =
+      e.status === 404 ? "This painting doesn't exist." : `Couldn't load the painting (${e.message}).`;
+    return fail(message, "/", "Back to the gallery");
   }
-  state.painting = data.painting;
-  state.strokes = data.strokes;
-  state.viewing = data.painting.strokeCount;
+  state.viewing = state.painting.strokeCount;
   build();
   update();
   page.removeAttribute("aria-busy");
   schedule();
 }
 
-function fail(message) {
-  page.removeAttribute("aria-busy");
-  page.replaceChildren(
-    el("p", { className: "error", textContent: message }),
-    el("a", { href: "/", textContent: "Back to the gallery" }),
-  );
-}
-
 function schedule() {
-  clearInterval(state.timer);
-  if (state.painting.status === "active") state.timer = setInterval(refresh, 5000);
+  state.stopPolling?.();
+  state.stopPolling = state.painting.status === "active" ? poll(refresh, 5000) : null;
 }
 
+/** Reloads the summary, and the stroke log only when it is behind the summary's stroke count. */
 async function refresh() {
   try {
-    const data = await load();
+    const painting = await getJson(api);
     const wasActive = state.painting.status === "active";
     const followingLatest = state.viewing === state.painting.strokeCount;
-    const strokesChanged = data.strokes.length !== state.strokes.length;
-    state.painting = data.painting;
-    state.strokes = data.strokes;
-    if (followingLatest && !state.playing) state.viewing = data.painting.strokeCount;
+    const strokesChanged = painting.strokeCount !== state.strokes.length;
+    if (strokesChanged) state.strokes = await loadStrokes();
+    state.painting = painting;
+    if (followingLatest && !ui.player.playing) state.viewing = painting.strokeCount;
     update(strokesChanged);
-    if (wasActive && data.painting.status !== "active") {
+    if (wasActive && painting.status !== "active") {
       schedule();
       renderOwner();
     }
@@ -136,20 +116,22 @@ function build() {
   }
 
   // Playback.
-  ui.play = el("button", { type: "button", className: "play", textContent: "▶" });
-  ui.play.setAttribute("aria-label", "Play history");
+  ui.player = playback({
+    className: "play",
+    frameUrl: (v) => snapshotUrl(p.id, v),
+    current: () => state.viewing,
+    last: () => state.painting.strokeCount,
+    show,
+    delay: (n) => Math.min(500, Math.max(40, 6000 / n)),
+  });
   ui.slider = el("input", { type: "range", min: 0, step: 1, id: "history" });
   ui.slider.setAttribute("aria-label", "Stroke");
   ui.ticks = el("div", { className: "ticks" });
   ui.ticks.setAttribute("aria-hidden", "true");
   ui.version = el("span", { className: "version" });
-  ui.play.addEventListener("click", () => (state.playing ? stop() : start()));
-  ui.slider.addEventListener("input", () => {
-    stop();
-    show(Number(ui.slider.value));
-  });
+  ui.slider.addEventListener("input", () => jump(Number(ui.slider.value)));
   const player = el("div", { className: "player" }, [
-    ui.play,
+    ui.player.button,
     el("div", { className: "track" }, [ui.slider, ui.ticks]),
     ui.version,
   ]);
@@ -179,7 +161,7 @@ function build() {
   ui.settings = el("dl", { className: "settings" });
   ui.testLink = p.reference
     ? el("a", {
-        href: `/tests/${encodeURIComponent(p.reference)}?condition=${encodeURIComponent(conditionKey(p))}`,
+        href: `/tests/${encodeURIComponent(p.reference)}?condition=${encodeURIComponent(p.condition)}`,
         textContent: "Part of a reference test →",
       })
     : el("a", { href: `/${prefillQuery(p)}`, textContent: "New painting with these settings" });
@@ -200,10 +182,7 @@ function build() {
       xLabel: "stroke",
       xTitle: (x) => (x === 0 ? "Blank canvas" : `Stroke ${x}`),
       extra: (x) => tooltipExtra(x),
-      onPick: (x) => {
-        stop();
-        show(x);
-      },
+      onPick: jump,
     });
     ui.chartCaption = el("p", { className: "small muted" });
     ui.chartPanel = el("section", { className: "panel chart-panel" }, [
@@ -219,35 +198,10 @@ function build() {
   }
 
   // Stroke log.
-  ui.logBody = el("tbody");
   ui.logSummary = el("summary");
-  const logTable = el("table", { className: "data" }, [
-    el("caption", { className: "visually-hidden", textContent: "Stroke log" }),
-    el("thead", {}, [
-      el(
-        "tr",
-        {},
-        [
-          ["Stroke", "num"],
-          ["Look", "num"],
-          ["Think", "num"],
-          ["Score", "num"],
-          ["Note", ""],
-          ["Model", ""],
-          ["Effort", ""],
-          ["Tokens in", "num"],
-          ["Tokens out", "num"],
-        ].map(([t, c]) => el("th", { scope: "col", className: c, textContent: t })),
-      ),
-    ]),
-    ui.logBody,
-  ]);
-  const log = el("details", { className: "panel log" }, [
-    ui.logSummary,
-    el("div", { className: "table-wrap" }, [logTable]),
-  ]);
+  ui.log = el("details", { className: "panel log" }, [ui.logSummary]);
 
-  const mainCol = el("div", { className: "col main-col" }, [stage, ui.chartPanel, log]);
+  const mainCol = el("div", { className: "col main-col" }, [stage, ui.chartPanel, ui.log]);
   const sideCol = el("div", { className: "col side-col" }, [ui.owner, settingsPanel]);
   page.replaceChildren(el("div", { className: "painting-layout" }, [mainCol, sideCol]));
 
@@ -271,19 +225,12 @@ function update(strokesChanged = true) {
 function renderSettings() {
   const p = state.painting;
   ui.title.textContent = p.prompt ?? "Open subject";
-  const look = el("span", {
-    className: "badge look",
-    textContent: lookLabel(p.strokesPerLook, p.maxStrokes),
-  });
-  ui.badges.replaceChildren(statusBadge(p.status), look);
+  ui.badges.replaceChildren(statusBadge(p.status), lookBadge(p));
   const rows = [
-    ["Style", `${p.style} · ${p.medium}`],
+    ["Style", p.style],
     ["Prompt", p.prompt ?? "Open subject (none given)"],
     ["Size", `${p.size ?? "pool"} · ${p.width}×${p.height}`],
-    [
-      "Strokes per look",
-      p.strokesPerLook >= p.maxStrokes ? `${p.strokesPerLook} (one look)` : String(p.strokesPerLook),
-    ],
+    ["Look setting", lookLabel(p.strokesPerLook, p.maxStrokes)],
     ["Phases", p.phases],
     ["Budget", `${p.strokeCount} of ${p.maxStrokes} strokes used`],
     ["Looks", fmtInt(p.looks)],
@@ -333,18 +280,8 @@ function renderTicks() {
 function renderChart() {
   if (!ui.chart) return;
   const p = state.painting;
-  const points = [];
-  const refs = [];
-  if (p.blankScore !== null) {
-    points.push({ x: 0, y: 0 });
-    for (const s of state.strokes) {
-      if (s.score !== null) points.push({ x: s.version, y: similarity(s.score, p.blankScore) });
-    }
-    refs.push({ y: 0, label: "blank canvas" });
-    if (p.meanColorScore !== null) {
-      refs.push({ y: similarity(p.meanColorScore, p.blankScore), label: "flat average color" });
-    }
-  }
+  const { refs, curve } = anchorRefs(p.blankScore, p.meanColorScore);
+  const points = curve(state.strokes.filter((s) => s.score !== null).map((s) => [s.version, s.score]));
   const marks = showLookMarks();
   ui.chart.setData({
     series: [{ id: p.id, label: "score", color: 1, points }],
@@ -373,19 +310,30 @@ function tooltipExtra(x) {
   return el("div", {}, parts);
 }
 
+const LOG_HEAD = [
+  ["Stroke", "num"],
+  ["Look", "num"],
+  ["Think", "num"],
+  ["Score", "num"],
+  ["Note", ""],
+  ["Model", ""],
+  ["Effort", ""],
+  ["Tokens in", "num"],
+  ["Tokens out", "num"],
+];
+
 function renderLog() {
   const n = state.strokes.length;
   ui.logSummary.textContent = `Stroke log (${n} ${n === 1 ? "stroke" : "strokes"})`;
   const rows = state.strokes.map((s) => {
-    const jump = el("button", { type: "button", className: "link-button", textContent: String(s.version) });
-    jump.setAttribute("aria-label", `Show stroke ${s.version}`);
-    jump.addEventListener("click", () => {
-      stop();
-      show(s.version);
+    const button = el("button", { type: "button", className: "link-button", textContent: String(s.version) });
+    button.setAttribute("aria-label", `Show stroke ${s.version}`);
+    button.addEventListener("click", () => {
+      jump(s.version);
       ui.img.scrollIntoView({ block: "nearest", behavior: "smooth" });
     });
     const tr = el("tr", {}, [
-      el("td", { className: "num" }, [jump]),
+      el("td", { className: "num" }, [button]),
       el("td", { className: "num", textContent: String(s.look) }),
       el("td", { className: "num", textContent: fmtSeconds(s.think_ms) }),
       el("td", { className: "num", textContent: fmtScore(s.score, state.painting.blankScore) }),
@@ -401,7 +349,7 @@ function renderLog() {
   if (!rows.length) {
     rows.push(el("tr", {}, [el("td", { colSpan: 9, className: "muted", textContent: "No strokes yet." })]));
   }
-  ui.logBody.replaceChildren(...rows);
+  ui.log.replaceChildren(ui.logSummary, table("Stroke log", LOG_HEAD, rows));
   ui.currentRow = null;
 }
 
@@ -448,36 +396,14 @@ function show(v) {
   ui.note.classList.toggle("muted", !s?.note);
 
   ui.currentRow?.classList.remove("current");
-  ui.currentRow = ui.logBody.querySelector(`tr[data-version="${state.viewing}"]`);
+  ui.currentRow = ui.log.querySelector(`tr[data-version="${state.viewing}"]`);
   ui.currentRow?.classList.add("current");
 }
 
-function stop() {
-  state.playing = false;
-  state.gen += 1;
-  ui.play.textContent = "▶";
-  ui.play.setAttribute("aria-label", "Play history");
-}
-
-async function start() {
-  const gen = ++state.gen;
-  state.playing = true;
-  ui.play.textContent = "❚❚";
-  ui.play.setAttribute("aria-label", "Pause");
-  let v = state.viewing >= state.painting.strokeCount ? 0 : state.viewing;
-  while (state.playing && gen === state.gen) {
-    // Preload each frame before showing it, so playback never flashes blank.
-    await preload(snapshotUrl(state.painting.id, v));
-    if (!state.playing || gen !== state.gen) break;
-    show(v);
-    const n = Math.max(1, state.painting.strokeCount);
-    await new Promise((r) => setTimeout(r, Math.min(500, Math.max(40, 6000 / n))));
-    if (v >= state.painting.strokeCount) {
-      stop();
-      break;
-    }
-    v += 1;
-  }
+/** Stops playback and shows stroke `v`. */
+function jump(v) {
+  ui.player.stop();
+  show(v);
 }
 
 // ---------------------------------------------------------------- owner
@@ -522,7 +448,7 @@ function renderOwner() {
         update(false);
         schedule();
         renderOwner();
-        setTimeout(refresh, 4500);
+        setTimeout(refresh, 5500);
       } catch (e) {
         finish.disabled = false;
         error.textContent =

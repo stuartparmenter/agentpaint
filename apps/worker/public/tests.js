@@ -4,34 +4,32 @@
 
 import { LineChart, legend, seriesClass } from "./chart.js";
 import {
+  anchorRefs,
   attribution,
   copyField,
   el,
+  fail,
   fmtInt,
   fmtNum,
   fmtScore,
   fmtSeconds,
   getJson,
-  modelsLabel,
-  similarity,
+  lookLabel,
+  poll,
   snapshotUrl,
+  table,
 } from "./common.js";
 import { createForm } from "./create-form.js";
 
 const page = document.getElementById("page");
 const referenceId = decodeURIComponent(location.pathname.split("/").filter(Boolean)[1] ?? "");
-const UNREPORTED = modelsLabel([]);
+// The results table's model label for runs whose painter reported no model.
+const UNREPORTED = "(not reported)";
 
 const plural = (n, word) => `${fmtInt(n)} ${word}${n === 1 ? "" : "s"}`;
 const capitalize = (s) => s[0].toUpperCase() + s.slice(1);
-
-function fail(message) {
-  page.removeAttribute("aria-busy");
-  page.replaceChildren(
-    el("p", { className: "error", textContent: message }),
-    el("a", { href: "/tests", textContent: "All reference tests" }),
-  );
-}
+const backToTests = (message) => fail(message, "/tests", "All reference tests");
+const isActive = (p) => p.status === "active";
 
 // ---------------------------------------------------------------- index
 
@@ -40,7 +38,7 @@ async function showIndex() {
   try {
     tests = await getJson("/api/tests");
   } catch (e) {
-    return fail(`Couldn't load the tests (${e.message}).`);
+    return backToTests(`Couldn't load the tests (${e.message}).`);
   }
   const cards = tests.map((t) => {
     const r = t.reference;
@@ -103,19 +101,15 @@ function conditionLabel(c) {
   return `${capitalize(c.style)} · ${c.size ?? "custom"} ${c.width}×${c.height} · ${c.maxStrokes} strokes · phases ${c.phases} · ${plural(c.runs, "run")}`;
 }
 
-function lookTitle(spl, max) {
-  if (spl === 1) return "Every stroke (1)";
-  if (spl >= max) return `One look (${max})`;
-  return `Every ${spl} strokes`;
-}
+const selectedCondition = (data) => data.conditions.find((c) => c.key === data.condition) ?? null;
 
-/** Model labels in a fixed order (alphabetical, "not reported" last), each with a categorical slot. */
-function modelColors(paintings) {
-  const named = [...new Set(paintings.map((p) => modelsLabel(p.models)))]
+/** The table's model labels in a fixed order (alphabetical, "not reported" last), each with a categorical slot. */
+function modelColors(table) {
+  const named = [...new Set(table.map((c) => c.models))]
     .filter((m) => m !== UNREPORTED)
     .sort((a, b) => a.localeCompare(b));
   const colors = new Map(named.map((m, i) => [m, i < 8 ? i + 1 : 0]));
-  if (paintings.some((p) => !p.models.length)) colors.set(UNREPORTED, 0);
+  if (table.some((c) => c.models === UNREPORTED)) colors.set(UNREPORTED, 0);
   return colors;
 }
 
@@ -124,14 +118,17 @@ async function showTest() {
   try {
     data = await getJson(apiUrl());
   } catch (e) {
-    return fail(e.status === 404 ? "No such reference test." : `Couldn't load the test (${e.message}).`);
+    return backToTests(
+      e.status === 404 ? "No such reference test." : `Couldn't load the test (${e.message}).`,
+    );
   }
   document.title = `${data.reference.title} · Reference tests · AgentPaint`;
-  const condition = data.conditions.find((c) => c.key === data.condition) ?? null;
+  const condition = selectedCondition(data);
 
   ui.lanesPanel = el("section", { className: "panel" });
   ui.lanes = el("div", { className: "lanes" });
-  ui.tableView = el("details", { className: "table-view" }, [el("summary", { textContent: "Table view" })]);
+  ui.tableSummary = el("summary", { textContent: "Table view" });
+  ui.tableView = el("details", {}, [ui.tableSummary]);
   ui.lanesPanel.append(
     el("h2", { textContent: "Results by model" }),
     el("p", {
@@ -154,12 +151,12 @@ async function showTest() {
   renderRuns(data, condition);
   page.removeAttribute("aria-busy");
 
-  if (data.paintings.some((p) => p.status === "active")) {
-    const timer = setInterval(async () => {
+  if (data.paintings.some(isActive)) {
+    const stopPolling = poll(async () => {
       try {
         const next = await getJson(apiUrl());
-        renderRuns(next, next.conditions.find((c) => c.key === next.condition) ?? null);
-        if (!next.paintings.some((p) => p.status === "active")) clearInterval(timer);
+        renderRuns(next, selectedCondition(next));
+        if (!next.paintings.some(isActive)) stopPolling();
       } catch (e) {
         console.error("refresh failed", e);
       }
@@ -229,48 +226,52 @@ function header(data, condition) {
 
 /** Model lanes, the table view and the score charts; rebuilt on refresh. */
 function renderRuns(data, condition) {
-  const paintings = data.paintings;
+  for (const section of [ui.lanesPanel, ui.chartsPanel]) section.hidden = data.paintings.length === 0;
+  if (!data.paintings.length) return;
   const max = condition?.maxStrokes ?? 1;
-  const colors = modelColors(paintings);
+  const byId = new Map(data.paintings.map((p) => [p.id, p]));
+  // Each table cell's runs, best score first.
+  const cells = data.table.map((cell) => ({
+    ...cell,
+    runs: cell.painting_ids
+      .map((id) => byId.get(id))
+      .sort((a, b) => (b.lastScore ?? -1) - (a.lastScore ?? -1)),
+  }));
+  const colors = modelColors(cells);
   const models = [...colors.keys()];
-  const settings = [...new Set(paintings.map((p) => p.strokesPerLook))].sort((a, b) => a - b);
-  for (const section of [ui.lanesPanel, ui.chartsPanel]) section.hidden = paintings.length === 0;
-  if (!paintings.length) return;
-  renderLanes(data, paintings, colors, models, settings, max);
-  renderTableView(data, models, max);
-  renderCharts(data, paintings, colors, models, settings, max);
+  const settings = [...new Set(cells.map((c) => c.strokes_per_look))].sort((a, b) => a - b);
+  renderLanes(data, cells, colors, models, settings, max);
+  renderTableView(data, cells, models, max);
+  renderCharts(data, cells, colors, models, settings, max);
 }
 
-/** One lane per model: a cell per look setting holding that model's runs, best score first. */
-function renderLanes(data, paintings, colors, models, settings, max) {
-  const cell = (m, spl) => data.table.find((r) => r.models === m && r.strokes_per_look === spl) ?? null;
+/** One lane per model: a cell per look setting holding that model's runs. */
+function renderLanes(data, cells, colors, models, settings, max) {
   ui.lanes.replaceChildren(
     ...models.map((m) => {
-      const cells = el("div", { className: "lane-cells" });
-      cells.style.setProperty("--cols", String(settings.length));
+      const row = el("div", { className: "lane-cells" });
+      row.style.setProperty("--cols", String(settings.length));
       for (const spl of settings) {
-        const runs = paintings
-          .filter((p) => p.strokesPerLook === spl && modelsLabel(p.models) === m)
-          .sort((a, b) => (b.lastScore ?? -1) - (a.lastScore ?? -1));
-        const summary = cell(m, spl);
-        const children = [el("h4", { textContent: lookTitle(spl, max) })];
+        const cell = cells.find((c) => c.models === m && c.strokes_per_look === spl);
+        const runs = cell?.runs ?? [];
+        const children = [el("h4", { textContent: lookLabel(spl, max) })];
         if (!runs.length) children.push(el("p", { className: "small muted", textContent: "No run" }));
-        if (runs.length > 1 && summary) {
+        if (runs.length > 1) {
           children.push(
             el("p", {
               className: "small",
-              textContent: `Mean ${fmtScore(summary.final_score, data.anchors.blank)} over ${plural(runs.length, "run")}`,
+              textContent: `Mean ${fmtScore(cell.final_score, data.anchors.blank)} over ${plural(runs.length, "run")}`,
             }),
           );
         }
-        for (const p of runs) children.push(runItem(p, m, spl, max));
-        cells.append(el("div", { className: "lane-cell" }, children));
+        for (const p of runs) children.push(runItem(p, m, lookLabel(spl, max)));
+        row.append(el("div", { className: "lane-cell" }, children));
       }
       const key = el("span", { className: "lane-key" });
       key.setAttribute("aria-hidden", "true");
       const lane = el("section", { className: "lane" }, [
         el("h3", { className: "lane-head" }, [key, m]),
-        cells,
+        row,
       ]);
       lane.setAttribute("aria-label", m);
       // The lane's stripe and dot take the model's chart color; its name stays in text color.
@@ -280,21 +281,20 @@ function renderLanes(data, paintings, colors, models, settings, max) {
   );
 }
 
-function runItem(p, model, spl, max) {
-  const href = `/p/${encodeURIComponent(p.id)}`;
+function runItem(p, model, look) {
   const thumb = el("img", {
     className: "thumb",
     src: snapshotUrl(p.id, p.strokeCount),
-    alt: `${model}, ${lookTitle(spl, max)}: canvas after ${p.strokeCount} strokes`,
+    alt: `${model}, ${look}: canvas after ${p.strokeCount} strokes`,
     width: p.width,
     height: p.height,
     loading: "lazy",
   });
   return el("div", { className: "run" }, [
-    el("a", { href }, [thumb]),
+    el("a", { href: `/p/${encodeURIComponent(p.id)}` }, [thumb]),
     el("div", { className: "run-score" }, [
       el("strong", { textContent: fmtScore(p.lastScore, p.blankScore) }),
-      p.status === "active" ? el("span", { className: "badge active", textContent: "painting" }) : null,
+      isActive(p) ? el("span", { className: "badge active", textContent: "painting" }) : null,
     ]),
     el("div", {
       className: "small muted",
@@ -308,8 +308,8 @@ function runItem(p, model, spl, max) {
 }
 
 /** The lanes' numbers as one table (model, then look setting), for screen readers and copying. */
-function renderTableView(data, models, max) {
-  const rows = [...data.table]
+function renderTableView(data, cells, models, max) {
+  const rows = [...cells]
     .sort(
       (a, b) =>
         models.indexOf(a.models) - models.indexOf(b.models) || a.strokes_per_look - b.strokes_per_look,
@@ -317,7 +317,7 @@ function renderTableView(data, models, max) {
     .map((r) =>
       el("tr", {}, [
         el("td", { textContent: r.models }),
-        el("td", { textContent: lookTitle(r.strokes_per_look, max) }),
+        el("td", { textContent: lookLabel(r.strokes_per_look, max) }),
         ...[
           fmtInt(r.paintings),
           fmtInt(r.finished),
@@ -330,8 +330,8 @@ function renderTableView(data, models, max) {
         ].map((v) => el("td", { className: "num", textContent: v })),
       ]),
     );
-  ui.tableView.querySelector(".table-wrap")?.remove();
-  ui.tableView.append(
+  ui.tableView.replaceChildren(
+    ui.tableSummary,
     table(
       "Results by model and look setting; repeated runs averaged",
       [
@@ -352,22 +352,14 @@ function renderTableView(data, models, max) {
 }
 
 /** One chart per look setting, one line per run colored by model, on one y-scale. */
-function renderCharts(data, paintings, colors, models, settings, max) {
-  const { blank, meanColor } = data.anchors;
-  const refs = [];
-  if (blank !== null) refs.push({ y: 0, label: "blank canvas" });
-  if (blank !== null && meanColor !== null) {
-    refs.push({ y: similarity(meanColor, blank), label: "flat average color" });
-  }
-  const curve = (p) =>
-    blank === null
-      ? []
-      : [{ x: 0, y: 0 }, ...(data.curves[p.id] ?? []).map(([x, y]) => ({ x, y: similarity(y, blank) }))];
+function renderCharts(data, cells, colors, models, settings, max) {
+  const { refs, curve } = anchorRefs(data.anchors.blank, data.anchors.meanColor);
+  const points = (p) => curve(data.curves[p.id] ?? []);
   const ys = refs.map((r) => r.y);
-  for (const p of paintings) for (const pt of curve(p)) ys.push(pt.y);
+  for (const cell of cells) for (const p of cell.runs) for (const pt of points(p)) ys.push(pt.y);
   const yDomain = [Math.min(...ys), Math.max(...ys)];
   const facets = settings.map((spl) => {
-    const title = lookTitle(spl, max);
+    const title = lookLabel(spl, max);
     let chart = ui.charts.get(spl);
     if (!chart) {
       chart = new LineChart({
@@ -378,22 +370,19 @@ function renderCharts(data, paintings, colors, models, settings, max) {
       });
       ui.charts.set(spl, chart);
     }
-    const runs = paintings.filter((p) => p.strokesPerLook === spl);
-    const runsOf = (m) => runs.filter((p) => modelsLabel(p.models) === m).length;
-    const series = runs
-      .map((p) => {
-        const model = modelsLabel(p.models);
-        const repeated = runsOf(model) > 1;
-        return {
+    // Cells are in model order; a model's repeated runs are thin lines labeled by id.
+    const series = cells
+      .filter((c) => c.strokes_per_look === spl)
+      .sort((a, b) => models.indexOf(a.models) - models.indexOf(b.models))
+      .flatMap((c) =>
+        c.runs.map((p) => ({
           id: p.id,
-          label: repeated ? `${model} · ${p.id}` : model,
-          color: colors.get(model),
-          thin: repeated,
-          points: curve(p),
-          rank: models.indexOf(model),
-        };
-      })
-      .sort((a, b) => a.rank - b.rank);
+          label: c.runs.length > 1 ? `${c.models} · ${p.id}` : c.models,
+          color: colors.get(c.models),
+          thin: c.runs.length > 1,
+          points: points(p),
+        })),
+      );
     chart.setData({ series, refs, xMax: max, yDomain });
     return el("div", { className: "facet" }, [el("h3", { textContent: title }), chart.root]);
   });
@@ -407,22 +396,6 @@ function renderCharts(data, paintings, colors, models, settings, max) {
     legend(models.map((m) => ({ color: colors.get(m), label: m }))),
     el("div", { className: "facets" }, facets),
   );
-}
-
-function table(caption, head, rows) {
-  return el("div", { className: "table-wrap" }, [
-    el("table", { className: "data" }, [
-      el("caption", { className: "visually-hidden", textContent: caption }),
-      el("thead", {}, [
-        el(
-          "tr",
-          {},
-          head.map(([t, c]) => el("th", { scope: "col", className: c, textContent: t })),
-        ),
-      ]),
-      el("tbody", {}, rows),
-    ]),
-  ]);
 }
 
 /** The test-mode create form and the matrix command for the selected condition. */

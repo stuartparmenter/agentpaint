@@ -2,11 +2,18 @@ import type { PaintingSummary } from "./types";
 
 export const NOT_REPORTED = "(not reported)";
 
+/** Whether a created painting is finished (created paintings are never archived). */
+export function isFinished(p: PaintingSummary): boolean {
+  return p.status === "done";
+}
+
 export interface SeriesCell {
   /** Self-reported models, joined; "(not reported)" when the painter reports none. */
   models: string;
   strokes_per_look: number;
   paintings: number;
+  /** Ids of the cell's paintings, in the order given. */
+  painting_ids: string[];
   finished: number;
   final_score: number | null;
   strokes_used: number;
@@ -34,7 +41,8 @@ export function seriesTable(paintings: PaintingSummary[]): SeriesCell[] {
         models: key.split("\u0000")[0] as string,
         strokes_per_look: ps[0]?.strokesPerLook ?? 1,
         paintings: ps.length,
-        finished: ps.filter((p) => p.status === "done" || p.status === "archived").length,
+        painting_ids: ps.map((p) => p.id),
+        finished: ps.filter(isFinished).length,
         final_score: mean(scores),
         strokes_used: mean(ps.map((p) => p.strokeCount)) ?? 0,
         looks: mean(ps.map((p) => p.looks)) ?? 0,

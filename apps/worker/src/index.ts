@@ -1,16 +1,16 @@
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { authenticate } from "./auth";
+import { authenticate, bearer } from "./auth";
 import { createPainting } from "./create";
 import { KEY, PAINTING_ID, SERIES_ID } from "./ids";
 import { handleMcp, handleScopedMcp } from "./mcp";
-import { referenceKey, snapshotKey } from "./painting";
+import { type Painting, referenceKey, snapshotKey } from "./painting";
 import { findReference, REFERENCES } from "./references";
 import { mixingModel, rendererVersion } from "./renderer";
 import { seriesTable } from "./series";
 import { createInput, studyBudget } from "./settings";
 import { STYLE_NAMES, STYLES } from "./styles";
-import { downsample, selectRuns, type TestDetail, testsIndex } from "./tests";
+import { conditionKey, downsample, selectRuns, type TestDetail, testsIndex } from "./tests";
 
 export { Painting } from "./painting";
 export { Registry } from "./registry";
@@ -79,11 +79,34 @@ async function rpcBody(c: AppContext): Promise<{ body: unknown } | Response> {
   return { body };
 }
 
-const bearer = (header: string | undefined) => /^Bearer (\S{1,256})$/.exec(header ?? "")?.[1];
-const tooLarge = bodyLimit({
-  maxSize: 64 * 1024,
-  onError: (c) => c.json({ error: "request body too large" }, 413),
-});
+const unauthorized = (c: AppContext) =>
+  c.json({ error: "unauthorized" }, 401, { "WWW-Authenticate": 'Bearer realm="agentpaint"' });
+const rateLimited = (c: AppContext) => c.json({ error: "rate limited" }, 429, { "Retry-After": "60" });
+
+const limitBody = (maxSize: number) =>
+  bodyLimit({ maxSize, onError: (c) => c.json({ error: "request body too large" }, 413) });
+const tooLarge = limitBody(64 * 1024);
+
+/** An owner-key action on a painting: 401 unless the key is the painting's owner key. */
+async function asOwner(
+  c: AppContext,
+  action: (painting: DurableObjectStub<Painting>, key: string) => Promise<object | null>,
+) {
+  const id = c.req.param("id") ?? "";
+  const key = bearer(c.req.header("Authorization"));
+  if (!PAINTING_ID.test(id) || !key || !KEY.test(key)) return unauthorized(c);
+  const result = await action(c.env.PAINTING.getByName(id), key);
+  return result ? c.json(result, 200, { "Cache-Control": "no-store" }) : unauthorized(c);
+}
+
+/** A JPEG from R2. Objects at these keys never change, so they are cached for a year. */
+function jpeg(c: AppContext, key: string) {
+  return cached(c, 31536000, async () => {
+    const object = await c.env.SNAPSHOTS.get(key);
+    if (!object) return c.notFound();
+    return new Response(object.body, { headers: { "Content-Type": "image/jpeg", ETag: object.httpEtag } });
+  });
+}
 
 app.get("/api/health", (c) => c.json({ ok: true, renderer: rendererVersion(), mixing: mixingModel() }));
 
@@ -101,24 +124,11 @@ app.get("/api/styles", (c) =>
   ),
 );
 
-app.get("/api/references", (c) =>
-  c.json(
-    REFERENCES.map((r) => ({
-      id: r.id,
-      title: r.title,
-      url: r.file,
-      width: r.width,
-      height: r.height,
-      artist: r.artist,
-      license: r.license,
-      license_url: r.licenseUrl,
-      source_url: r.sourceUrl,
-    })),
-  ),
-);
+app.get("/api/references", (c) => c.json(REFERENCES));
 
+// Pages poll every 5 s; the gallery, painting and series endpoints are cached as long.
 app.get("/api/paintings", (c) =>
-  cached(c, 4, async () => c.json(await c.env.REGISTRY.getByName("registry").list(100))),
+  cached(c, 5, async () => c.json(await c.env.REGISTRY.getByName("registry").list(100))),
 );
 
 // Create a painting. Public, rate-limited per client IP. The response holds the
@@ -126,7 +136,7 @@ app.get("/api/paintings", (c) =>
 app.post("/api/paintings", tooLarge, async (c) => {
   const ip = c.req.header("CF-Connecting-IP") ?? "local";
   const { success } = await c.env.CREATE_LIMITER.limit({ key: `create:${ip}` });
-  if (!success) return c.json({ error: "rate limited" }, 429, { "Retry-After": "60" });
+  if (!success) return rateLimited(c);
   let raw: unknown;
   try {
     raw = await c.req.json();
@@ -151,67 +161,44 @@ app.post("/api/paintings", tooLarge, async (c) => {
 app.get("/api/paintings/:id", async (c) => {
   const id = c.req.param("id");
   if (!PAINTING_ID.test(id)) return c.notFound();
-  return cached(c, 4, async () => {
+  return cached(c, 5, async () => {
     const painting = await c.env.REGISTRY.getByName("registry").get(id);
-    return painting ? c.json(painting) : c.notFound();
+    if (!painting) return c.notFound();
+    return c.json({ ...painting, condition: painting.reference ? conditionKey(painting) : null });
   });
 });
 
 app.get("/api/paintings/:id/strokes", async (c) => {
   const id = c.req.param("id");
   if (!PAINTING_ID.test(id)) return c.notFound();
-  return cached(c, 4, async () => {
+  return cached(c, 5, async () => {
     const log = await c.env.PAINTING.getByName(id).strokeLog();
     return log ? c.json(log) : c.notFound();
   });
 });
 
-app.post("/api/paintings/:id/finish", async (c) => {
-  const id = c.req.param("id");
-  const key = bearer(c.req.header("Authorization"));
-  if (!PAINTING_ID.test(id) || !key || !KEY.test(key)) return c.json({ error: "unauthorized" }, 401);
-  const ok = await c.env.PAINTING.getByName(id).finishByOwner(key);
-  return ok
-    ? c.json({ finished: true }, 200, { "Cache-Control": "no-store" })
-    : c.json({ error: "unauthorized" }, 401);
-});
+app.post("/api/paintings/:id/finish", (c) =>
+  asOwner(c, async (painting, key) => ((await painting.finishByOwner(key)) ? { finished: true } : null)),
+);
 
 // Owner-only check that the stroke log replays to the stored snapshot.
-app.post("/api/paintings/:id/verify", async (c) => {
+app.post("/api/paintings/:id/verify", (c) => asOwner(c, (painting, key) => painting.verifyReplay(key)));
+
+app.get("/api/paintings/:id/reference", (c) => {
   const id = c.req.param("id");
-  const key = bearer(c.req.header("Authorization"));
-  if (!PAINTING_ID.test(id) || !key || !KEY.test(key)) return c.json({ error: "unauthorized" }, 401);
-  const result = await c.env.PAINTING.getByName(id).verifyReplay(key);
-  return result
-    ? c.json(result, 200, { "Cache-Control": "no-store" })
-    : c.json({ error: "unauthorized" }, 401);
+  return PAINTING_ID.test(id) ? jpeg(c, referenceKey(id)) : c.notFound();
 });
 
-app.get("/api/paintings/:id/reference", async (c) => {
-  const id = c.req.param("id");
-  if (!PAINTING_ID.test(id)) return c.notFound();
-  return cached(c, 31536000, async () => {
-    const object = await c.env.SNAPSHOTS.get(referenceKey(id));
-    if (!object) return c.notFound();
-    return new Response(object.body, { headers: { "Content-Type": "image/jpeg", ETag: object.httpEtag } });
-  });
-});
-
-app.get("/api/paintings/:id/v/:version", async (c) => {
+app.get("/api/paintings/:id/v/:version", (c) => {
   const { id, version } = c.req.param();
   if (!PAINTING_ID.test(id) || !/^(0|[1-9]\d{0,5})$/.test(version)) return c.notFound();
-  // A version's snapshot never changes.
-  return cached(c, 31536000, async () => {
-    const object = await c.env.SNAPSHOTS.get(snapshotKey(id, Number(version)));
-    if (!object) return c.notFound();
-    return new Response(object.body, { headers: { "Content-Type": "image/jpeg", ETag: object.httpEtag } });
-  });
+  return jpeg(c, snapshotKey(id, Number(version)));
 });
 
 app.get("/api/series/:id", async (c) => {
   const id = c.req.param("id");
   if (!SERIES_ID.test(id)) return c.notFound();
-  return cached(c, 4, async () => {
+  return cached(c, 5, async () => {
     const series = await c.env.REGISTRY.getByName("registry").series(id);
     if (!series) return c.notFound();
     return c.json({ ...series, table: seriesTable(series.paintings) });
@@ -265,17 +252,14 @@ app.get("/api/tests/:reference", (c) => {
 
 // Pages (static HTML that reads the API).
 app.get("/p/:id", (c) => c.env.ASSETS.fetch(new Request(new URL("/painting", c.req.url))));
-app.get("/tests", (c) => c.env.ASSETS.fetch(new Request(new URL("/tests", c.req.url))));
-app.get("/tests/:reference", (c) => c.env.ASSETS.fetch(new Request(new URL("/tests", c.req.url))));
+app.get("/tests/:reference?", (c) => c.env.ASSETS.fetch(new Request(new URL("/tests", c.req.url))));
 
 // Pooled endpoint: bearer-token agents, any pool painting.
 app.all("/mcp", tooLarge, async (c) => {
-  const agent = authenticate(c.req.header("Authorization"), c.env.MCP_TOKENS);
-  if (!agent) {
-    return c.json({ error: "unauthorized" }, 401, { "WWW-Authenticate": 'Bearer realm="agentpaint"' });
-  }
+  const agent = authenticate(bearer(c.req.header("Authorization")), c.env.MCP_TOKENS);
+  if (!agent) return unauthorized(c);
   const { success } = await c.env.MCP_LIMITER.limit({ key: agent.name });
-  if (!success) return c.json({ error: "rate limited" }, 429, { "Retry-After": "60" });
+  if (!success) return rateLimited(c);
   const parsed = await rpcBody(c);
   if (parsed instanceof Response) return parsed;
   return handleMcp(c.req.raw, c.env, agent, parsed.body);
@@ -283,24 +267,17 @@ app.all("/mcp", tooLarge, async (c) => {
 
 // Scoped endpoint: one created painting. The agent key is in the path (some MCP
 // clients can't set headers) or a Bearer token; it is checked by the painting.
-const scopedLimit = bodyLimit({
-  maxSize: 1024 * 1024,
-  onError: (c) => c.json({ error: "request body too large" }, 413),
-});
+const scopedLimit = limitBody(1024 * 1024);
 async function scoped(c: AppContext, id: string, key: string | undefined) {
-  if (!PAINTING_ID.test(id) || !key || !KEY.test(key)) {
-    return c.json({ error: "unauthorized" }, 401, { "WWW-Authenticate": 'Bearer realm="agentpaint"' });
-  }
+  if (!PAINTING_ID.test(id) || !key || !KEY.test(key)) return unauthorized(c);
   // Painting ids are public, so requests are limited per client before the key
   // is checked, and the painting's own limit is charged only once it is.
   const ip = c.req.header("CF-Connecting-IP") ?? "local";
   const client = await c.env.SCOPED_CLIENT_LIMITER.limit({ key: `${ip}:${id}` });
-  if (!client.success) return c.json({ error: "rate limited" }, 429, { "Retry-After": "60" });
-  if (!(await c.env.PAINTING.getByName(id).verifyAgentKey(key))) {
-    return c.json({ error: "unauthorized" }, 401, { "WWW-Authenticate": 'Bearer realm="agentpaint"' });
-  }
+  if (!client.success) return rateLimited(c);
+  if (!(await c.env.PAINTING.getByName(id).verifyAgentKey(key))) return unauthorized(c);
   const painting = await c.env.SCOPED_LIMITER.limit({ key: id });
-  if (!painting.success) return c.json({ error: "rate limited" }, 429, { "Retry-After": "60" });
+  if (!painting.success) return rateLimited(c);
   const parsed = await rpcBody(c);
   if (parsed instanceof Response) return parsed;
   return handleScopedMcp(c.req.raw, c.env, id, parsed.body);

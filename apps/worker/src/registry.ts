@@ -1,17 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
-import { ARCHIVE_AFTER_MS, CANVAS_SIZE, createdIdleMs, LEASE_MS, MEDIUM, type SizeName } from "./config";
-import { digestsEqual, KEY_LENGTH, PAINTING_ID_LENGTH, randomId, sha256Hex } from "./ids";
+import { ARCHIVE_AFTER_MS, CANVAS_SIZE, createdIdleMs, LEASE_MS, type SizeName } from "./config";
+import { constantTimeEqual, KEY_LENGTH, PAINTING_ID_LENGTH, randomId, sha256Hex } from "./ids";
 import { pick, STYLE_NAMES, STYLES, type StyleName } from "./styles";
 import type {
-  CreateSettings,
-  PaintingKind,
-  PaintingStats,
-  PaintingStatus,
-  PaintingSummary,
-  PhaseMode,
-} from "./types";
-
-export type {
   CreateSettings,
   PaintingKind,
   PaintingStats,
@@ -26,7 +17,6 @@ interface Row extends Record<string, SqlStorageValue> {
   status: string;
   style: string;
   prompt: string | null;
-  medium: string;
   width: number;
   height: number;
   stroke_count: number;
@@ -57,7 +47,6 @@ function toSummary(r: Row): PaintingSummary {
     status: r.status as PaintingStatus,
     style: r.style as StyleName,
     prompt: r.prompt,
-    medium: r.medium,
     width: r.width,
     height: r.height,
     strokeCount: r.stroke_count,
@@ -111,11 +100,10 @@ export class Registry extends DurableObject<Env> {
     this.sql = ctx.storage.sql;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS paintings (
       id TEXT PRIMARY KEY,
-      kind TEXT NOT NULL DEFAULT 'pool',
+      kind TEXT NOT NULL,
       status TEXT NOT NULL,
       style TEXT NOT NULL,
       prompt TEXT,
-      medium TEXT NOT NULL,
       width INTEGER NOT NULL,
       height INTEGER NOT NULL,
       stroke_count INTEGER NOT NULL DEFAULT 0,
@@ -126,8 +114,8 @@ export class Registry extends DurableObject<Env> {
       lease_until INTEGER NOT NULL DEFAULT 0,
       series_id TEXT,
       size TEXT,
-      strokes_per_look INTEGER NOT NULL DEFAULT 1,
-      phases TEXT NOT NULL DEFAULT 'enforced',
+      strokes_per_look INTEGER NOT NULL,
+      phases TEXT NOT NULL,
       reference TEXT,
       blank_score REAL,
       mean_color_score REAL,
@@ -159,7 +147,6 @@ export class Registry extends DurableObject<Env> {
    */
   async lease(maxActive: number): Promise<{ painting: PaintingSummary; created: boolean } | null> {
     const now = Date.now();
-    this.archiveFinished(now);
     const free = this.sql
       .exec<Row>(
         `SELECT * FROM paintings WHERE kind = 'pool' AND status = 'active' AND lease_until <= ?
@@ -190,12 +177,11 @@ export class Registry extends DurableObject<Env> {
     const style = STYLES[pick(STYLE_NAMES)];
     const id = randomId(PAINTING_ID_LENGTH);
     this.sql.exec(
-      `INSERT INTO paintings (id, kind, status, style, prompt, medium, width, height, max_strokes, created_at,
-        lease_until, strokes_per_look, phases) VALUES (?, 'pool', 'active', ?, ?, ?, ?, ?, ?, ?, ?, 1, 'enforced')`,
+      `INSERT INTO paintings (id, kind, status, style, prompt, width, height, max_strokes, created_at,
+        lease_until, strokes_per_look, phases) VALUES (?, 'pool', 'active', ?, ?, ?, ?, ?, ?, ?, 1, 'enforced')`,
       id,
       style.name,
       pick(style.prompts),
-      MEDIUM,
       CANVAS_SIZE,
       CANVAS_SIZE,
       style.maxStrokes,
@@ -233,7 +219,8 @@ export class Registry extends DurableObject<Env> {
         .exec<{ key_hash: string }>("SELECT key_hash FROM series WHERE id = ?", series.id)
         .toArray()[0];
       if (!row) return { ok: false, error: "series_not_found" };
-      if (!digestsEqual(row.key_hash, series.keyHash)) return { ok: false, error: "series_key_mismatch" };
+      if (!constantTimeEqual(row.key_hash, series.keyHash))
+        return { ok: false, error: "series_key_mismatch" };
       seriesId = series.id;
     } else {
       seriesId = randomId(PAINTING_ID_LENGTH);
@@ -243,7 +230,7 @@ export class Registry extends DurableObject<Env> {
     // Paintings idle past createdIdleMs are finished by their own alarm; leave
     // them out of the count even if that hasn't happened yet.
     const inProgress = `kind = 'created' AND status = 'active' AND COALESCE(last_stroke_at, created_at) > ?`;
-    const since = now - createdIdleMs(this.env.CREATED_IDLE_SECONDS);
+    const since = now - createdIdleMs(this.env);
     const mine = this.sql
       .exec<{ n: number }>(
         `SELECT COUNT(*) AS n FROM paintings WHERE ${inProgress} AND creator = ?`,
@@ -267,13 +254,12 @@ export class Registry extends DurableObject<Env> {
     }
     const id = randomId(PAINTING_ID_LENGTH);
     this.sql.exec(
-      `INSERT INTO paintings (id, kind, status, style, prompt, medium, width, height, max_strokes, created_at,
+      `INSERT INTO paintings (id, kind, status, style, prompt, width, height, max_strokes, created_at,
         series_id, size, strokes_per_look, phases, reference, blank_score, mean_color_score, creator)
-       VALUES (?, 'created', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, 'created', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       settings.style,
       settings.prompt,
-      MEDIUM,
       settings.width,
       settings.height,
       settings.maxStrokes,
@@ -316,12 +302,9 @@ export class Registry extends DurableObject<Env> {
       id,
       stats.strokeCount,
     );
-    this.archiveFinished(Date.now());
   }
 
-  // Reads are side-effect free (they're on the public, anonymous path); a done
-  // pool painting past its grace period reads as archived even before the
-  // archiving UPDATE runs on the next lease or stroke. Expired paintings are hidden.
+  /** The gallery: active paintings first, then the most recently painted. Expired paintings are hidden. */
   async list(limit: number): Promise<PaintingSummary[]> {
     return this.sql
       .exec<Row>(
@@ -338,7 +321,6 @@ export class Registry extends DurableObject<Env> {
     return this.row(id);
   }
 
-  /** A series and its paintings, in creation order. */
   /** Created paintings made against a reference (all of them, or one reference's), oldest first. */
   async withReference(reference: string | null, limit: number): Promise<PaintingSummary[]> {
     return this.sql
@@ -355,6 +337,7 @@ export class Registry extends DurableObject<Env> {
       .map(toSummary);
   }
 
+  /** A series and its paintings, in creation order. */
   async series(id: string): Promise<{ id: string; createdAt: number; paintings: PaintingSummary[] } | null> {
     const series = this.sql
       .exec<{ id: string; created_at: number }>("SELECT id, created_at FROM series WHERE id = ?", id)
@@ -378,19 +361,15 @@ export class Registry extends DurableObject<Env> {
     return row ? toSummary(row) : null;
   }
 
-  /** All columns, with `status` computed as of now; takes the archive cutoff as its first parameter. */
+  /**
+   * All columns. A done pool painting reads as `archived` once ARCHIVE_AFTER_MS
+   * has passed; takes that cutoff as its first parameter.
+   */
   private columns() {
     return `id, kind,
       CASE WHEN kind = 'pool' AND status = 'done' AND finished_at <= ? THEN 'archived' ELSE status END AS status,
-      style, prompt, medium, width, height, stroke_count, max_strokes, created_at, last_stroke_at, finished_at,
+      style, prompt, width, height, stroke_count, max_strokes, created_at, last_stroke_at, finished_at,
       lease_until, series_id, size, strokes_per_look, phases, reference, blank_score, mean_color_score, last_score,
       looks, mean_think_ms, tokens_in, tokens_out, models`;
-  }
-
-  private archiveFinished(now: number) {
-    this.sql.exec(
-      "UPDATE paintings SET status = 'archived' WHERE kind = 'pool' AND status = 'done' AND finished_at <= ?",
-      now - ARCHIVE_AFTER_MS,
-    );
   }
 }

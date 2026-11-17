@@ -1,7 +1,7 @@
 import { createMcpHandler, McpServer } from "@modelcontextprotocol/server";
 import * as z from "zod/v4";
 import type { Agent } from "./auth";
-import { DEFAULT_MAX_ACTIVE_PAINTINGS, MAX_BATCH, NOTE_MAX } from "./config";
+import { DEFAULT_MAX_ACTIVE_PAINTINGS, envNumber, MAX_BATCH, NOTE_MAX } from "./config";
 import { MODEL_ID, parseToken } from "./ids";
 import type { Assignment, SubmitResult } from "./painting";
 import { batchStrokeInput, strokeInput } from "./stroke";
@@ -32,13 +32,13 @@ function image(bytes: Uint8Array) {
   return { type: "image" as const, data: base64(bytes), mimeType: "image/jpeg" };
 }
 
-function maxActive(env: Env): number {
-  const n = Number(env.MAX_ACTIVE_PAINTINGS);
-  return Number.isInteger(n) && n > 0 ? n : DEFAULT_MAX_ACTIVE_PAINTINGS;
-}
-
-function isAssignment(a: unknown): a is Assignment {
-  return typeof a === "object" && a !== null && "token" in a;
+/** Serve one MCP request (JSON responses, no sessions) with a server built for it. */
+function serve(request: Request, build: () => McpServer, parsedBody: unknown): Promise<Response> {
+  const handler = createMcpHandler(build, {
+    responseMode: "json",
+    onerror: (e) => console.error("mcp error", e),
+  });
+  return handler.fetch(request, { parsedBody });
 }
 
 // --- Pooled endpoint (/mcp): bearer-token agents, leased pool paintings -----------
@@ -85,8 +85,9 @@ export function buildServer(env: Env, agent: Agent): McpServer {
     },
     async () => {
       const registry = env.REGISTRY.getByName("registry");
+      const maxActive = envNumber(env.MAX_ACTIVE_PAINTINGS, DEFAULT_MAX_ACTIVE_PAINTINGS);
       for (let attempt = 0; attempt < 3; attempt++) {
-        const lease = await registry.lease(maxActive(env));
+        const lease = await registry.lease(maxActive);
         if (!lease) {
           return text({
             available: false,
@@ -96,20 +97,19 @@ export function buildServer(env: Env, agent: Agent): McpServer {
         const painting = env.PAINTING.getByName(lease.painting.id);
         if (lease.created) await painting.init(lease.painting);
         const assignment = await painting.assign(agent.name);
-        if (isAssignment(assignment)) return poolAssignmentResult(assignment);
-
-        const state = await painting.state();
-        if (!state) {
+        if (assignment === null) {
           // The painting has no state yet (its creation was interrupted): create it.
           await painting.init(lease.painting);
           const retried = await painting.assign(agent.name);
-          if (isAssignment(retried)) return poolAssignmentResult(retried);
+          if (retried && "token" in retried) return poolAssignmentResult(retried);
           await registry.release(lease.painting.id);
+        } else if ("token" in assignment) {
+          return poolAssignmentResult(assignment);
         } else {
           // The painting finished but the registry hadn't heard yet: resync and try another.
           await registry.recordStroke(lease.painting.id, {
-            strokeCount: state.strokeCount,
-            status: state.status,
+            strokeCount: assignment.strokeCount,
+            status: assignment.status,
             at: Date.now(),
           });
         }
@@ -148,11 +148,7 @@ export function buildServer(env: Env, agent: Agent): McpServer {
 }
 
 export function handleMcp(request: Request, env: Env, agent: Agent, parsedBody: unknown): Promise<Response> {
-  const handler = createMcpHandler(() => buildServer(env, agent), {
-    responseMode: "json",
-    onerror: (e) => console.error("mcp error", e),
-  });
-  return handler.fetch(request, { parsedBody });
+  return serve(request, () => buildServer(env, agent), parsedBody);
 }
 
 // --- Scoped endpoint (/mcp/p/<id>): one created painting -------------------------
@@ -187,7 +183,7 @@ export function buildScopedServer(env: Env, paintingId: string): McpServer {
     async () => {
       const assignment = await painting().assign(SCOPED_AGENT);
       if (!assignment) throw new Error("This painting does not exist.");
-      if (!isAssignment(assignment)) {
+      if (!("token" in assignment)) {
         return text({
           available: false,
           status: assignment.status,
@@ -270,10 +266,11 @@ export function buildScopedServer(env: Env, paintingId: string): McpServer {
   return server;
 }
 
-export function handleScopedMcp(request: Request, env: Env, paintingId: string, parsedBody: unknown) {
-  const handler = createMcpHandler(() => buildScopedServer(env, paintingId), {
-    responseMode: "json",
-    onerror: (e) => console.error("mcp error", e),
-  });
-  return handler.fetch(request, { parsedBody });
+export function handleScopedMcp(
+  request: Request,
+  env: Env,
+  paintingId: string,
+  parsedBody: unknown,
+): Promise<Response> {
+  return serve(request, () => buildScopedServer(env, paintingId), parsedBody);
 }

@@ -4,10 +4,8 @@
 //
 // Without AGENTPAINT_TOKEN, the token is read from apps/worker/.dev.vars.
 
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
-
-// biome-ignore lint/suspicious/noExplicitAny: JSON from tool results and the API is untyped.
-type Json = Record<string, any>;
+import type { Client } from "@modelcontextprotocol/client";
+import { connect, firstJson, type Json, type McpContent } from "../tools/painter/src/mcp";
 
 const base = (process.env.AGENTPAINT_URL ?? "http://127.0.0.1:8787").replace(/\/$/, "");
 const devTokens = process.env.AGENTPAINT_TOKEN ? [] : await readDevTokens();
@@ -30,23 +28,12 @@ function check(name: string, ok: boolean, detail?: unknown) {
   if (!ok) failures++;
 }
 
-async function connect(bearer: string) {
-  const client = new Client({ name: "agentpaint-e2e", version: "0.1.0" });
-  await client.connect(
-    new StreamableHTTPClientTransport(new URL(`${base}/mcp`), {
-      requestInit: { headers: { Authorization: `Bearer ${bearer}` } },
-    }),
-  );
-  return client;
-}
-
-type Content = { type: string; text?: string; data?: string; mimeType?: string };
+const connectPool = (bearer: string) => connect(new URL(`${base}/mcp`), bearer);
 
 async function call(client: Client, name: string, args: Record<string, unknown> = {}) {
   const result = await client.callTool({ name, arguments: args });
-  const content = result.content as Content[];
-  const textBlock = content.find((c) => c.type === "text");
-  return { result, content, json: textBlock?.text ? JSON.parse(textBlock.text) : undefined };
+  const content = result.content as McpContent[];
+  return { result, content, json: firstJson(content) };
 }
 
 /** JPEG signature and frame size (from the first SOF0 marker). */
@@ -103,7 +90,7 @@ const batch = await fetch(`${base}/mcp`, {
 check("MCP rejects JSON-RPC batches", batch.status === 400, batch.status);
 
 // --- Tools ---
-const client = await connect(token);
+const client = await connectPool(token);
 const tools = await client.listTools();
 check(
   "lists get_assignment and submit_stroke",
@@ -128,7 +115,7 @@ check(
 const startCount: number = meta?.stroke_count;
 check("the assignment reports the stroke count", Number.isInteger(startCount) && startCount >= 0, startCount);
 
-const paintingId = String(meta.token).split("-")[0];
+const paintingId: string = meta.painting_id;
 const tiny = bigStroke(meta, 300);
 tiny.brush.size = 1;
 const tooSmall = await call(client, "submit_stroke", { token: meta.token, stroke_data: tiny });
@@ -160,7 +147,7 @@ const reuse = await call(client, "submit_stroke", { token: meta.token, stroke_da
 check("a token paints only once", reuse.json?.reason === "token_used", reuse.json);
 
 if (otherToken) {
-  const other = await connect(otherToken);
+  const other = await connectPool(otherToken);
   const a = await call(client, "get_assignment");
   const stolen = await call(other, "submit_stroke", {
     token: a.json.token,
@@ -186,8 +173,8 @@ check("rejects a forged token", forged.json?.reason === "invalid_token", forged.
 // --- Leases: while one assignment is outstanding, the next goes to another painting ---
 const second = await call(client, "get_assignment");
 const third = await call(client, "get_assignment");
-const secondId = String(second.json?.token).split("-")[0];
-const thirdId = String(third.json?.token).split("-")[0];
+const secondId = second.json.painting_id;
+const thirdId = third.json.painting_id;
 check("concurrent assignments get different paintings", secondId !== thirdId, [secondId, thirdId]);
 const done = await call(client, "submit_stroke", {
   token: third.json.token,
@@ -262,12 +249,6 @@ async function create(settings: Record<string, unknown>, address = testAddress()
   return { status: res.status, body: (await res.json()) as Json };
 }
 
-async function connectUrl(url: string, headers: Record<string, string> = {}) {
-  const c = new Client({ name: "agentpaint-e2e", version: "0.1.0" });
-  await c.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers } }));
-  return c;
-}
-
 // Every MCP response a painter sees, to check the score never leaks to it.
 const painterTexts: string[] = [];
 async function scopedCall(c: Client, name: string, args: Record<string, unknown> = {}) {
@@ -328,7 +309,7 @@ const poolKeyOnScoped = await fetch(`${base}/mcp/p/${p.id}`, {
 });
 check("a pool token doesn't open a scoped endpoint", poolKeyOnScoped.status === 401, poolKeyOnScoped.status);
 
-const scopedClient = await connectUrl(p.mcp_url);
+const scopedClient = await connect(new URL(p.mcp_url));
 const look1 = await scopedCall(scopedClient, "get_assignment");
 const kinds = look1.content.map((c) =>
   c.type === "text" ? (c.text?.startsWith("{") ? "meta" : c.text) : c.type,
@@ -348,6 +329,7 @@ check(
     !("min_brush_size" in m1),
   m1,
 );
+check("look metadata names the painting", m1.painting_id === p.id, m1.painting_id);
 const canvasImage = look1.content.filter((c) => c.type === "image")[1];
 const canvasSize = canvasImage?.data ? jpegSize(canvasImage.data) : undefined;
 check(
@@ -385,13 +367,26 @@ check(
 );
 const overSize = await scopedCall(scopedClient, "submit_stroke", {
   token: m1.token,
-  stroke_data: { ...studyStroke(20, 40), brush: { size: 150, hardness: 0.5, opacity: 1, flow: 1 } },
+  stroke_data: {
+    ...studyStroke(20, 40),
+    brush: { size: m1.max_brush_size + 1, hardness: 0.5, opacity: 1, flow: 1 },
+  },
 });
-check("brush size is capped for the canvas width", overSize.json?.reason === "invalid_stroke", overSize.json);
+check(
+  "a brush above the look's max_brush_size is rejected",
+  overSize.json?.reason === "invalid_stroke",
+  overSize.json,
+);
 
 const applied2 = await scopedCall(scopedClient, "submit_stroke", {
   token: m1.token,
-  strokes: [studyStroke(20, 40, "sky band"), studyStroke(40, 120, "horizon")],
+  strokes: [
+    {
+      ...studyStroke(20, 40, "sky band"),
+      brush: { size: m1.max_brush_size, hardness: 0.5, opacity: 1, flow: 1 },
+    },
+    studyStroke(40, 120, "horizon"),
+  ],
   model: "e2e-model",
   effort: "low",
   input_tokens: 123,
@@ -399,7 +394,7 @@ const applied2 = await scopedCall(scopedClient, "submit_stroke", {
   prompt_hash: "abc123",
 });
 check(
-  "a valid batch applies and reports what's left",
+  "a valid batch (one stroke at max_brush_size) applies and reports what's left",
   applied2.json?.applied === true &&
     applied2.json?.applied_count === 2 &&
     applied2.json?.strokes_remaining === 1,
@@ -523,9 +518,7 @@ check(
   sibling.status === 201 && sibling.body.series_id === p.series_id && sibling.body.series_key === null,
   sibling.body.series_id,
 );
-const sib = await connectUrl(`${base}/mcp/p/${sibling.body.id}`, {
-  Authorization: `Bearer ${sibling.body.agent_key}`,
-});
+const sib = await connect(new URL(`${base}/mcp/p/${sibling.body.id}`), sibling.body.agent_key);
 const sibLook = await scopedCall(sib, "get_assignment");
 check(
   "enforced phases send the brush floor, scaled to the canvas",
@@ -560,9 +553,9 @@ check(
 );
 
 // The pool never hands out created paintings.
-const poolClient = await connect(token);
+const poolClient = await connectPool(token);
 const poolLook = await call(poolClient, "get_assignment");
-const poolId = String(poolLook.json?.token).split("-")[0];
+const poolId = poolLook.json.painting_id;
 check("the pool doesn't hand out created paintings", poolId !== p.id && poolId !== sibling.body.id, poolId);
 const crossed = await call(poolClient, "submit_stroke", {
   token: look2.json.token,
@@ -594,7 +587,9 @@ for (let i = 0; i < 125 && strangerStatus !== 429; i++) {
   await res.body?.cancel();
 }
 check("a client sending bad keys is rate limited", strangerStatus === 429, strangerStatus);
-const keyHolder = await connectUrl(target.body.mcp_url, { "CF-Connecting-IP": "192.0.2.77" });
+const keyHolder = await connect(new URL(target.body.mcp_url), undefined, {
+  "CF-Connecting-IP": "192.0.2.77",
+});
 const ownerLook = await scopedCall(keyHolder, "get_assignment");
 check("the agent key still works for its own client", !!ownerLook.json?.token, ownerLook.json);
 await keyHolder.close();

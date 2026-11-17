@@ -2,16 +2,15 @@
 // stroke budget and look setting under "More options". On a reference test
 // page it fixes the reference and prefills the test's condition.
 
-import { el, getJson, paintingKey, saveJson, saveSeriesKey } from "./common.js";
+import { el, getJson, paintingKey, saveJson } from "./common.js";
 
-const STYLES = ["landscape", "figurative", "abstract", "minimalist"];
 const PHASES = ["off", "guidance", "enforced"];
 const LOOK_HELP =
   "1 = a look at the canvas before every stroke; larger = several strokes per look; equal to max strokes = one look for the whole painting.";
 
 let counter = 0;
 
-/** Style budgets from the API ({name, max_strokes: {full, study}}), loaded once. */
+/** Styles from the API ({name, max_strokes: {full, study}}), in its order, loaded once. */
 let stylesPromise = null;
 function loadStyles() {
   stylesPromise ??= getJson("/api/styles").catch(() => []);
@@ -29,12 +28,10 @@ function field(labelText, control, help) {
   return el("div", { className: "field" }, children);
 }
 
+const option = (v) => el("option", { value: v, textContent: v[0].toUpperCase() + v.slice(1) });
+
 function select(name, options, value) {
-  const s = el(
-    "select",
-    { name },
-    options.map((v) => el("option", { value: v, textContent: v[0].toUpperCase() + v.slice(1) })),
-  );
+  const s = el("select", { name }, options.map(option));
   s.value = options.includes(value) ? value : options[0];
   return s;
 }
@@ -44,7 +41,6 @@ function numberInput(name, value, placeholder) {
     type: "number",
     name,
     min: 1,
-    max: 2000,
     step: 1,
     inputMode: "numeric",
     value: value ?? "",
@@ -59,7 +55,8 @@ function numberInput(name, value, placeholder) {
  * @param {object} [options.test] {reference, style, size, max_strokes, phases}: test mode
  */
 export function createForm({ prefill = {}, test = null } = {}) {
-  const style = select("style", STYLES, test?.style ?? prefill.style);
+  // The style options arrive with the styles; the first is the default.
+  const style = el("select", { name: "style" });
   const prompt = el("textarea", {
     name: "prompt",
     rows: 2,
@@ -83,7 +80,13 @@ export function createForm({ prefill = {}, test = null } = {}) {
   }
   style.addEventListener("change", syncBudget);
   size.addEventListener("change", syncBudget);
-  syncBudget();
+  loadStyles().then((styles) => {
+    const names = styles.map((s) => s.name);
+    style.append(...names.map(option));
+    const wanted = test?.style ?? prefill.style;
+    if (names.includes(wanted)) style.value = wanted;
+    syncBudget();
+  });
 
   const lookField = field("Strokes per look", perLook, LOOK_HELP);
   const moreOpen = Boolean(prefill.max_strokes || Number(prefill.strokes_per_look) > 1);
@@ -137,15 +140,7 @@ export function createForm({ prefill = {}, test = null } = {}) {
     const body = { style: style.value };
     if (test) Object.assign(body, { reference: test.reference, size: size.value, phases: phases.value });
     else body.prompt = prompt.value.trim() || null;
-    const max = maxStrokes.value.trim();
-    if (max) {
-      const n = Number(max);
-      if (!Number.isInteger(n) || n < 1 || n > 2000) {
-        showError("Max strokes must be a whole number from 1 to 2000.");
-        return maxStrokes.focus();
-      }
-      body.max_strokes = n;
-    }
+    if (maxStrokes.value) body.max_strokes = Number(maxStrokes.value);
     const spl = Number(perLook.value);
     const budget = body.max_strokes ?? (await syncBudget());
     if (!Number.isInteger(spl) || spl < 1) {
@@ -166,14 +161,7 @@ export function createForm({ prefill = {}, test = null } = {}) {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      saveJson(paintingKey(created.id), {
-        agent_key: created.agent_key,
-        owner_key: created.owner_key,
-        mcp_url: created.mcp_url,
-        series_id: created.series_id,
-        series_key: created.series_key,
-      });
-      if (created.series_key) saveSeriesKey(created.series_id, created.series_key);
+      saveJson(paintingKey(created.id), { mcp_url: created.mcp_url, owner_key: created.owner_key });
       location.assign(`/p/${encodeURIComponent(created.id)}`);
     } catch (err) {
       const messages = {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { authenticate, parseTokens } from "../src/auth";
-import { lookTtlMs } from "../src/config";
+import { authenticate, bearer, parseTokens } from "../src/auth";
+import { envNumber, lookTtlMs } from "../src/config";
 import { makeToken, PAINTING_ID, parseToken, randomId } from "../src/ids";
 import { canvasSize, findReference, REFERENCES } from "../src/references";
 import { seriesTable } from "../src/series";
@@ -15,23 +15,34 @@ const TOKEN_B = "b".repeat(40);
 const CONFIG = `alice:${TOKEN_A}, bob:${TOKEN_B}`;
 
 describe("auth", () => {
+  const auth = (header: string | null, config: string | undefined = CONFIG) =>
+    authenticate(bearer(header), config);
+
   test("accepts configured tokens and names the agent", () => {
-    expect(authenticate(`Bearer ${TOKEN_A}`, CONFIG)).toEqual({ name: "alice" });
-    expect(authenticate(`Bearer ${TOKEN_B}`, CONFIG)).toEqual({ name: "bob" });
+    expect(auth(`Bearer ${TOKEN_A}`)).toEqual({ name: "alice" });
+    expect(auth(`Bearer ${TOKEN_B}`)).toEqual({ name: "bob" });
   });
 
   test("rejects missing, malformed and wrong tokens", () => {
-    expect(authenticate(null, CONFIG)).toBeNull();
-    expect(authenticate(TOKEN_A, CONFIG)).toBeNull();
-    expect(authenticate(`Basic ${TOKEN_A}`, CONFIG)).toBeNull();
-    expect(authenticate(`Bearer ${TOKEN_A.slice(1)}`, CONFIG)).toBeNull();
-    expect(authenticate(`Bearer ${TOKEN_A}x`, CONFIG)).toBeNull();
-    expect(authenticate(`Bearer ${TOKEN_A}`, undefined)).toBeNull();
+    expect(auth(null)).toBeNull();
+    expect(auth(TOKEN_A)).toBeNull();
+    expect(auth(`Basic ${TOKEN_A}`)).toBeNull();
+    expect(auth(`Bearer ${TOKEN_A.slice(1)}`)).toBeNull();
+    expect(auth(`Bearer ${TOKEN_A}x`)).toBeNull();
+    expect(authenticate(TOKEN_A, undefined)).toBeNull();
   });
 
   test("ignores short tokens and bad names", () => {
     expect(parseTokens(`short:abc, bad name:${TOKEN_A},:${TOKEN_A}`).length).toBe(0);
-    expect(authenticate("Bearer abc", "short:abc")).toBeNull();
+    expect(auth("Bearer abc", "short:abc")).toBeNull();
+  });
+});
+
+describe("config", () => {
+  test("environment overrides fall back on unset, empty, zero, negative and non-numeric values", () => {
+    expect(envNumber("600", 10)).toBe(600);
+    expect(envNumber("0.5", 10)).toBe(0.5);
+    for (const value of [undefined, "", "0", "-3", "abc", "Infinity"]) expect(envNumber(value, 10)).toBe(10);
   });
 });
 
@@ -148,7 +159,6 @@ describe("created paintings", () => {
       status: "done",
       style: "landscape",
       prompt: null,
-      medium: "acrylic",
       width: 512,
       height: 288,
       maxStrokes: 250,
@@ -181,10 +191,10 @@ describe("created paintings", () => {
       p("c", ["m1"], 250, 0.85, 200, 5000),
       p("d", [], 1, 0.7, 250, 10),
     ]);
-    expect(table.map((c) => [c.models, c.strokes_per_look, c.paintings])).toEqual([
-      ["(not reported)", 1, 1],
-      ["m1", 1, 2],
-      ["m1", 250, 1],
+    expect(table.map((c) => [c.models, c.strokes_per_look, c.painting_ids])).toEqual([
+      ["(not reported)", 1, ["d"]],
+      ["m1", 1, ["a", "b"]],
+      ["m1", 250, ["c"]],
     ]);
     const m1 = table.find((c) => c.models === "m1" && c.strokes_per_look === 1);
     expect(m1?.final_score).toBeCloseTo(0.85);
@@ -200,7 +210,6 @@ describe("reference tests", () => {
       status: "active",
       style: "landscape",
       prompt: null,
-      medium: "acrylic",
       width: 512,
       height: 288,
       strokeCount: 0,

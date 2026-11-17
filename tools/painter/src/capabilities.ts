@@ -67,3 +67,13 @@ async function resolve(client: Anthropic, model: string, effort: Effort, thinkin
   }
   return params;
 }
+
+/** The request fields for `params`: model and max_tokens, plus effort and thinking where set. */
+export function requestFields(params: ModelParams) {
+  return {
+    model: params.model,
+    max_tokens: params.max_tokens,
+    ...(params.output_config ? { output_config: params.output_config } : {}),
+    ...(params.thinking ? { thinking: params.thinking } : {}),
+  };
+}

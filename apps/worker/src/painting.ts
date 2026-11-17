@@ -1,20 +1,22 @@
 import { DurableObject } from "cloudflare:workers";
 import {
-  CANVAS_IDLE_MS,
   CHECKPOINT_EVERY,
   createdIdleMs,
+  DEFAULT_CANVAS_IDLE_SECONDS,
+  envNumber,
   lookTtlMs,
   MAX_BATCH,
+  MEDIUM,
   MEDIUM_DESCRIPTION,
   SNAPSHOT_QUALITY,
   TOKEN_TTL_MS,
   UNPAINTED_EXPIRY_MS,
 } from "./config";
-import { digestsEqual, makeToken, randomId, sha256Hex, TOKEN_SECRET_LENGTH } from "./ids";
-import type { PaintingStats, PaintingStatus, PaintingSummary } from "./registry";
+import { constantTimeEqual, makeToken, randomId, sha256Hex, TOKEN_SECRET_LENGTH } from "./ids";
 import { Canvas, resetRenderer, validateStroke } from "./renderer";
-import { type BatchStrokeInput, checkBounds, normalize, scaledMinBrush } from "./stroke";
+import { type BatchStrokeInput, checkBounds, maxBrushSize, normalize, scaledMinBrush } from "./stroke";
 import { currentPhase, isStyleName, STYLES, type Style } from "./styles";
+import type { PaintingStats, PaintingStatus, PaintingSummary } from "./types";
 
 /** What one look shows: the canvas, and the reference when the painting has one. */
 export interface LookImages {
@@ -22,11 +24,21 @@ export interface LookImages {
   canvas: Uint8Array;
 }
 
+/** The fields a look sends the painter. */
+export type LookMetadata = Record<string, string | number | boolean | null>;
+
 export interface Assignment {
   token: string;
   /** Null when this returns a look that is still open (no new image until its strokes are used). */
   images: LookImages | null;
-  metadata: Record<string, unknown>;
+  metadata: LookMetadata;
+}
+
+/** What `assign` returns for a painting that can't be painted. */
+export interface Unavailable {
+  available: false;
+  status: PaintingStatus;
+  strokeCount: number;
 }
 
 export type RejectReason =
@@ -93,7 +105,6 @@ interface Meta extends Record<string, SqlStorageValue> {
   kind: string;
   style: string;
   prompt: string | null;
-  medium: string;
   width: number;
   height: number;
   max_strokes: number;
@@ -173,7 +184,7 @@ export class Painting extends DurableObject<Env> {
   async init(summary: PaintingSummary, created: InitCreated | null = null): Promise<void> {
     if (this.meta()) return;
     this.sql.exec(`CREATE TABLE IF NOT EXISTS meta (
-      id TEXT PRIMARY KEY, kind TEXT NOT NULL, style TEXT NOT NULL, prompt TEXT, medium TEXT NOT NULL,
+      id TEXT PRIMARY KEY, kind TEXT NOT NULL, style TEXT NOT NULL, prompt TEXT,
       width INTEGER NOT NULL, height INTEGER NOT NULL, max_strokes INTEGER NOT NULL,
       status TEXT NOT NULL, version INTEGER NOT NULL, created_at INTEGER NOT NULL, finished_at INTEGER,
       strokes_per_look INTEGER NOT NULL, phases TEXT NOT NULL, reference TEXT,
@@ -181,7 +192,7 @@ export class Painting extends DurableObject<Env> {
     )`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS strokes (
       version INTEGER PRIMARY KEY, data TEXT NOT NULL, agent TEXT, created_at INTEGER NOT NULL,
-      look INTEGER NOT NULL DEFAULT 0, think_ms INTEGER, score REAL, note TEXT, model TEXT, effort TEXT,
+      look INTEGER NOT NULL, think_ms INTEGER, score REAL, note TEXT, model TEXT, effort TEXT,
       input_tokens INTEGER, output_tokens INTEGER, prompt_hash TEXT
     )`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS tokens (
@@ -190,14 +201,13 @@ export class Painting extends DurableObject<Env> {
     )`);
     this.sql.exec("CREATE TABLE IF NOT EXISTS reference (grid BLOB NOT NULL)");
     this.sql.exec(
-      `INSERT INTO meta (id, kind, style, prompt, medium, width, height, max_strokes, status, version, created_at,
+      `INSERT INTO meta (id, kind, style, prompt, width, height, max_strokes, status, version, created_at,
         strokes_per_look, phases, reference, agent_key_hash, owner_key_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?)`,
       summary.id,
       summary.kind,
       summary.style,
       summary.prompt,
-      summary.medium,
       summary.width,
       summary.height,
       summary.maxStrokes,
@@ -224,40 +234,36 @@ export class Painting extends DurableObject<Env> {
     });
   }
 
-  /** Check a created painting's agent key (constant time on the digests). */
+  /** Check a created painting's agent key. */
   async verifyAgentKey(key: string): Promise<boolean> {
-    const expected = this.meta()?.agent_key_hash;
-    const actual = await sha256Hex(key);
-    return !!expected && digestsEqual(actual, expected);
+    return this.keyMatches(this.meta()?.agent_key_hash, key);
   }
 
   /** End a created painting early, given its owner key. */
   async finishByOwner(key: string): Promise<boolean> {
-    const expected = this.meta()?.owner_key_hash;
-    const actual = await sha256Hex(key);
-    if (!expected || !digestsEqual(actual, expected)) return false;
-    const meta = this.meta() as Meta;
-    if (meta.status === "active") {
-      this.sql.exec("UPDATE meta SET status = 'done', finished_at = ?", Date.now());
-      this.sql.exec("UPDATE tokens SET remaining = 0");
-      await this.track(async () => {
-        if (this.canvas) await this.putCheckpoint(meta.id, this.canvas);
-        await this.reportStats(Date.now());
-        this.unload();
-      });
-    }
+    if (!(await this.keyMatches(this.meta()?.owner_key_hash, key))) return false;
+    if (this.meta()?.status === "active") await this.track(() => this.end("done", Date.now()));
     return true;
   }
 
-  async assign(agent: string): Promise<Assignment | { available: false; status: PaintingStatus } | null> {
+  /**
+   * A look at the painting, `Unavailable` when it can't be painted, or null when
+   * it was never created.
+   */
+  async assign(agent: string): Promise<Assignment | Unavailable | null> {
+    const unavailable = (meta: Meta): Unavailable => ({
+      available: false,
+      status: meta.status as PaintingStatus,
+      strokeCount: meta.version,
+    });
     const initial = this.meta();
     if (!initial) return null;
     // Never load a canvas for a painting that can't be painted.
-    if (initial.status !== "active") return { available: false, status: initial.status as PaintingStatus };
+    if (initial.status !== "active") return unavailable(initial);
     return this.track(async () => {
       await this.ensureLoaded();
-      const meta = this.meta();
-      if (meta?.status !== "active" || !this.latestImage) return null;
+      const meta = this.meta() as Meta;
+      if (meta.status !== "active" || !this.latestImage) return unavailable(meta);
       const now = Date.now();
       this.sql.exec("DELETE FROM tokens WHERE expires_at < ?", now - TOKEN_TTL_MS);
 
@@ -432,8 +438,9 @@ export class Painting extends DurableObject<Env> {
       if (status === "done") token.remaining = 0;
 
       // Persistence and bookkeeping. A failure here doesn't undo the strokes:
-      // they are recorded above and replay from storage.
-      for (const { version, image } of images) await this.putSnapshot(meta.id, version, image);
+      // they are recorded above and replay from storage. The registry hears last,
+      // so the gallery never lists a stroke whose snapshot isn't stored.
+      await Promise.all(images.map(({ version, image }) => this.putSnapshot(meta.id, version, image)));
       if (this.canvas && (status === "done" || meta.version - this.checkpointVersion >= CHECKPOINT_EVERY)) {
         await this.putCheckpoint(meta.id, this.canvas);
       }
@@ -443,50 +450,30 @@ export class Painting extends DurableObject<Env> {
     });
   }
 
-  /** Current status and stroke count, or null if this painting was never created. */
-  async state(): Promise<{ status: PaintingStatus; strokeCount: number } | null> {
-    const meta = this.meta();
-    return meta ? { status: meta.status as PaintingStatus, strokeCount: meta.version } : null;
-  }
-
   /**
-   * Replay check, for the owner: rebuild the canvas from an empty canvas and from
-   * the latest checkpoint (replaying the stroke log with seed = version) and
-   * compare each result, byte for byte, with the stored snapshot of the latest stroke.
+   * Replay check, for the owner: rebuild the canvas the way a load does, from an
+   * empty canvas and from the latest checkpoint (replaying the stroke log with
+   * seed = version), and compare each result, byte for byte, with the stored
+   * snapshot of the latest stroke. `fromCheckpoint` is null when there is no
+   * usable checkpoint (a load then starts from scratch).
    */
   async verifyReplay(
     ownerKey: string,
   ): Promise<{ version: number; fromScratch: boolean; fromCheckpoint: boolean | null } | null> {
     const meta = this.meta();
-    const expected = meta?.owner_key_hash;
-    if (!meta || !expected || !digestsEqual(await sha256Hex(ownerKey), expected)) return null;
+    if (!meta || !(await this.keyMatches(meta.owner_key_hash, ownerKey))) return null;
     const stored = await this.env.SNAPSHOTS.get(snapshotKey(meta.id, meta.version));
     const storedBytes = stored ? new Uint8Array(await stored.arrayBuffer()) : null;
-    const strokes = this.sql
-      .exec<{ version: number; data: string }>(
-        "SELECT version, data FROM strokes WHERE version <= ? ORDER BY version",
-        meta.version,
-      )
-      .toArray();
     const sameAsStored = (canvas: Canvas) => {
-      try {
-        for (const s of strokes) if (s.version > canvas.version) canvas.applyStroke(s.data, s.version);
-        const image = canvas.renderJpeg(SNAPSHOT_QUALITY);
-        return (
-          !!storedBytes && image.length === storedBytes.length && image.every((b, i) => b === storedBytes[i])
-        );
-      } finally {
-        canvas.free();
-      }
+      const image = this.replayOnto(canvas, meta.version);
+      canvas.free();
+      return (
+        !!storedBytes && image.length === storedBytes.length && image.every((b, i) => b === storedBytes[i])
+      );
     };
     const fromScratch = sameAsStored(new Canvas(meta.width, meta.height));
-    let fromCheckpoint: boolean | null = null;
-    const checkpoint = await this.env.SNAPSHOTS.get(checkpointKey(meta.id));
-    if (checkpoint) {
-      fromCheckpoint = sameAsStored(
-        Canvas.fromCheckpoint(new Uint8Array(await checkpoint.arrayBuffer()), meta.width, meta.height),
-      );
-    }
+    const checkpoint = await this.readCheckpoint(meta);
+    const fromCheckpoint = checkpoint ? sameAsStored(checkpoint) : null;
     return { version: meta.version, fromScratch, fromCheckpoint };
   }
 
@@ -519,10 +506,7 @@ export class Painting extends DurableObject<Env> {
     const now = Date.now();
     if (meta.kind === "created" && meta.status === "active" && meta.version === 0) {
       if (now >= meta.created_at + UNPAINTED_EXPIRY_MS && this.inflight === 0) {
-        this.sql.exec("UPDATE meta SET status = 'expired', finished_at = ?", now);
-        this.sql.exec("UPDATE tokens SET remaining = 0");
-        await this.reportStats(now);
-        this.unload();
+        await this.end("expired", now);
         return;
       }
     }
@@ -531,33 +515,19 @@ export class Painting extends DurableObject<Env> {
       meta.kind === "created" &&
       meta.status === "active" &&
       lastStroke !== null &&
-      now >= lastStroke + createdIdleMs(this.env.CREATED_IDLE_SECONDS) &&
+      now >= lastStroke + createdIdleMs(this.env) &&
       this.inflight === 0
     ) {
       // Abandoned: finish it as it stands, dated at its last stroke.
-      this.sql.exec("UPDATE meta SET status = 'done', finished_at = ?", lastStroke);
-      this.sql.exec("UPDATE tokens SET remaining = 0");
-      try {
-        if (this.canvas) await this.putCheckpoint(meta.id, this.canvas);
-      } catch (e) {
-        console.error("checkpoint at idle finish failed", meta.id, e); // replay from scratch still works
-      }
-      await this.reportStats(lastStroke);
-      this.unload();
+      await this.end("done", lastStroke);
       return;
     }
     if (this.canvas) {
       const idleFor = now - this.lastActivity;
       if (this.inflight === 0 && !this.loading && idleFor >= this.idleMs()) {
         const canvas = this.canvas;
-        try {
-          if (canvas.version > this.checkpointVersion) {
-            // Save progress first so the next load replays few strokes.
-            await this.putCheckpoint(meta.id, canvas);
-          }
-        } catch (e) {
-          console.error("idle checkpoint failed", meta.id, e); // e.g. stale after a renderer reset
-        }
+        // Save progress first so the next load replays few strokes.
+        await this.putCheckpoint(meta.id, canvas);
         if (this.inflight === 0 && this.canvas === canvas) {
           console.log("unloading idle canvas", meta.id);
           this.unload();
@@ -567,14 +537,16 @@ export class Painting extends DurableObject<Env> {
     await this.scheduleAlarm();
   }
 
-  private metadata(meta: Meta, token: TokenRow, newLook: boolean): Record<string, unknown> {
+  private metadata(meta: Meta, token: TokenRow, newLook: boolean): LookMetadata {
     const style = styleOf(meta);
-    const fields: Record<string, unknown> = {
+    const fields: LookMetadata = {
       token: makeToken(meta.id, token.secret),
+      painting_id: meta.id,
       prompt: meta.prompt,
       canvas_width: meta.width,
       canvas_height: meta.height,
-      medium: meta.medium,
+      max_brush_size: maxBrushSize(meta.width),
+      medium: MEDIUM,
       medium_description: MEDIUM_DESCRIPTION,
       style: style.name,
       stroke_count: meta.version,
@@ -727,7 +699,11 @@ export class Painting extends DurableObject<Env> {
   }
 
   private lastStrokeAt(): number | null {
-    return this.sql.exec<{ at: number | null }>("SELECT MAX(created_at) AS at FROM strokes").one().at;
+    return (
+      this.sql
+        .exec<{ created_at: number }>("SELECT created_at FROM strokes ORDER BY version DESC LIMIT 1")
+        .toArray()[0]?.created_at ?? null
+    );
   }
 
   /**
@@ -742,18 +718,33 @@ export class Painting extends DurableObject<Env> {
     if (meta.kind === "created" && meta.status === "active") {
       const lastStroke = this.lastStrokeAt();
       due.push(
-        lastStroke === null
-          ? meta.created_at + UNPAINTED_EXPIRY_MS
-          : lastStroke + createdIdleMs(this.env.CREATED_IDLE_SECONDS),
+        lastStroke === null ? meta.created_at + UNPAINTED_EXPIRY_MS : lastStroke + createdIdleMs(this.env),
       );
     }
     if (due.length) await this.ctx.storage.setAlarm(Math.max(Date.now() + 1000, Math.min(...due)));
   }
 
-  /** CANVAS_IDLE_SECONDS overrides the default (mainly for testing). */
   private idleMs(): number {
-    const seconds = Number(this.env.CANVAS_IDLE_SECONDS);
-    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : CANVAS_IDLE_MS;
+    return envNumber(this.env.CANVAS_IDLE_SECONDS, DEFAULT_CANVAS_IDLE_SECONDS) * 1000;
+  }
+
+  /** Whether `key` hashes to `hash` (compared in constant time). */
+  private async keyMatches(hash: string | null | undefined, key: string): Promise<boolean> {
+    const actual = await sha256Hex(key);
+    return !!hash && constantTimeEqual(actual, hash);
+  }
+
+  /**
+   * End the painting: no token paints again, the canvas is checkpointed if it has
+   * unsaved strokes, the registry is told, and the canvas is freed.
+   */
+  private async end(status: "done" | "expired", finishedAt: number) {
+    const meta = this.meta() as Meta;
+    this.sql.exec("UPDATE meta SET status = ?, finished_at = ?", status, finishedAt);
+    this.sql.exec("UPDATE tokens SET remaining = 0");
+    if (this.canvas) await this.putCheckpoint(meta.id, this.canvas);
+    await this.reportStats(finishedAt);
+    this.unload();
   }
 
   private hasMeta(): boolean {
@@ -801,39 +792,55 @@ export class Painting extends DurableObject<Env> {
   private async load(): Promise<void> {
     const meta = this.meta();
     if (!meta) return;
-    let canvas: Canvas | null = null;
-    const object = await this.env.SNAPSHOTS.get(checkpointKey(meta.id));
-    if (object) {
-      try {
-        // Dimensions are checked before anything is allocated.
-        const restored = Canvas.fromCheckpoint(
-          new Uint8Array(await object.arrayBuffer()),
-          meta.width,
-          meta.height,
-        );
-        if (restored.version <= meta.version) canvas = restored;
-        else restored.free();
-      } catch (e) {
-        console.error("ignoring unreadable checkpoint", meta.id, e);
-      }
-    }
-    canvas ??= new Canvas(meta.width, meta.height);
+    const canvas = (await this.readCheckpoint(meta)) ?? new Canvas(meta.width, meta.height);
     this.checkpointVersion = canvas.version;
+    this.latestImage = this.replayOnto(canvas, meta.version);
+    this.canvas = canvas;
+  }
+
+  /**
+   * The latest checkpoint from R2 as a canvas, or null when there is none, it
+   * can't be read, or it is ahead of the stroke log.
+   */
+  private async readCheckpoint(meta: Meta): Promise<Canvas | null> {
+    const object = await this.env.SNAPSHOTS.get(checkpointKey(meta.id));
+    if (!object) return null;
+    try {
+      // Dimensions are checked before anything is allocated.
+      const restored = Canvas.fromCheckpoint(
+        new Uint8Array(await object.arrayBuffer()),
+        meta.width,
+        meta.height,
+      );
+      if (restored.version <= meta.version) return restored;
+      restored.free();
+    } catch (e) {
+      console.error("ignoring unreadable checkpoint", meta.id, e);
+    }
+    return null;
+  }
+
+  /**
+   * Apply the stored strokes after the canvas's version, up to `upTo`, each with
+   * seed = its version, and render the result. On failure the canvas is freed
+   * (or the renderer reset, if it trapped) and the error rethrown.
+   */
+  private replayOnto(canvas: Canvas, upTo: number): Uint8Array {
     const pending = this.sql
       .exec<{ version: number; data: string }>(
-        "SELECT version, data FROM strokes WHERE version > ? ORDER BY version",
+        "SELECT version, data FROM strokes WHERE version > ? AND version <= ? ORDER BY version",
         canvas.version,
+        upTo,
       )
       .toArray();
     try {
       for (const s of pending) canvas.applyStroke(s.data, s.version);
-      this.latestImage = canvas.renderJpeg(SNAPSHOT_QUALITY);
+      return canvas.renderJpeg(SNAPSHOT_QUALITY);
     } catch (e) {
       if (e instanceof WebAssembly.RuntimeError) resetRenderer();
       else canvas.free();
       throw e;
     }
-    this.canvas = canvas;
   }
 
   /** Upload a snapshot, retrying once. Returns whether it was stored. */
@@ -851,9 +858,15 @@ export class Painting extends DurableObject<Env> {
     return false;
   }
 
+  /**
+   * Upload a checkpoint when the canvas has strokes the latest one lacks. Never
+   * throws (e.g. on a canvas left stale by a renderer reset): without a
+   * checkpoint, a load replays from scratch.
+   */
   private async putCheckpoint(id: string, canvas: Canvas) {
     try {
       const version = canvas.version;
+      if (version <= this.checkpointVersion) return;
       await this.env.SNAPSHOTS.put(checkpointKey(id), canvas.checkpoint());
       this.checkpointVersion = Math.max(this.checkpointVersion, version);
     } catch (e) {
