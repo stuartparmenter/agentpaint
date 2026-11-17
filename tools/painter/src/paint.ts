@@ -56,7 +56,7 @@ export interface PaintSummary {
   stopReason: string;
 }
 
-export function toToolContent(content: McpContent[]): BetaToolResultContentBlockParam[] {
+function toToolContent(content: McpContent[]): BetaToolResultContentBlockParam[] {
   return content.flatMap((c): BetaToolResultContentBlockParam[] => {
     if (c.type === "text" && c.text !== undefined) return [{ type: "text", text: c.text }];
     if (c.type === "image" && c.data && (c.mimeType === "image/png" || c.mimeType === "image/jpeg")) {
@@ -66,14 +66,14 @@ export function toToolContent(content: McpContent[]): BetaToolResultContentBlock
   });
 }
 
-export type McpTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
+type McpTool = Awaited<ReturnType<Client["listTools"]>>["tools"][number];
 
 /**
  * The MCP tools as Claude tools, each run by `run`. The model sees each schema
  * without its `$schema` dialect marker and without the properties `hidden` lists
  * for that tool.
  */
-export function claudeTools(
+function claudeTools(
   mcpTools: McpTool[],
   run: (name: string, input: Record<string, unknown>) => Promise<BetaToolResultContentBlockParam[]>,
   hidden: Record<string, string[]> = {},
@@ -96,7 +96,7 @@ export function claudeTools(
 }
 
 /** Input tokens of one response, counting cache reads and cache writes. */
-export function inputTokens(usage: BetaUsage): number {
+function inputTokens(usage: BetaUsage): number {
   return usage.input_tokens + (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0);
 }
 

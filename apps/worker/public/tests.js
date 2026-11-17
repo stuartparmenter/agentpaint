@@ -100,7 +100,7 @@ function goWith(key, value) {
 }
 
 function conditionLabel(c) {
-  return `${capitalize(c.style)} · ${c.size ?? "custom"} ${c.width}×${c.height} · ${c.maxStrokes} strokes · ${plural(c.runs, "run")}`;
+  return `${capitalize(c.style)} · ${c.size} ${c.width}×${c.height} · ${c.maxStrokes} strokes · ${plural(c.runs, "run")}`;
 }
 
 const selectedCondition = (data) => data.conditions.find((c) => c.key === data.condition) ?? null;

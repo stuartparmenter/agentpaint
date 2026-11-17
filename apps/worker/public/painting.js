@@ -229,7 +229,7 @@ function renderSettings() {
   const rows = [
     ["Style", p.style],
     ["Prompt", p.prompt ?? "Open subject (none given)"],
-    ["Size", `${p.size ?? "pool"} · ${p.width}×${p.height}`],
+    ["Size", `${p.size} · ${p.width}×${p.height}`],
     ["Strokes per assignment", assignmentTitle("span", p.strokesPerAssignment, p.maxStrokes)],
     ["Budget", `${p.strokeCount} of ${p.maxStrokes} strokes used`],
     ["Assignments", fmtInt(p.assignments)],

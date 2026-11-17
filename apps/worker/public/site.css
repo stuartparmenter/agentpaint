@@ -9,7 +9,6 @@
   --accent: #2f7d55;
   --accent-ink: #ffffff;
   --done: #9a6b1f;
-  --archived: #6b5a9a;
   --expired: #7a746b;
   --danger: #b3261e;
   --canvas-bg: #ebe6dc;
@@ -43,7 +42,6 @@
     --accent: #6fcf97;
     --accent-ink: #10231a;
     --done: #d9b36a;
-    --archived: #ab93e0;
     --expired: #9b968e;
     --danger: #f2a49d;
     --canvas-bg: #2a2931;
@@ -194,14 +192,10 @@ h3 {
 .badge.done {
   color: var(--done);
 }
-.badge.archived {
-  color: var(--archived);
-}
 .badge.expired {
   color: var(--expired);
 }
-.badge.assignment,
-.badge.test {
+.badge.assignment {
   color: var(--muted);
   text-transform: none;
   letter-spacing: 0;

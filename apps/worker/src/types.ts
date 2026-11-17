@@ -3,13 +3,10 @@
 import type { SizeName } from "./config";
 import type { StyleName } from "./styles";
 
-export type PaintingStatus = "active" | "done" | "archived" | "expired";
-/** `pool` paintings are made by the pooled endpoint's leases; `created` ones by POST /api/paintings. */
-export type PaintingKind = "pool" | "created";
+export type PaintingStatus = "active" | "done" | "expired";
 
 export interface PaintingSummary {
   id: string;
-  kind: PaintingKind;
   status: PaintingStatus;
   style: StyleName;
   prompt: string | null;
@@ -20,9 +17,8 @@ export interface PaintingSummary {
   createdAt: number;
   lastStrokeAt: number | null;
   finishedAt: number | null;
-  /** Created paintings only (pool paintings: null / their fixed defaults). */
-  seriesId: string | null;
-  size: SizeName | null;
+  seriesId: string;
+  size: SizeName;
   strokesPerAssignment: number;
   reference: string | null;
   blankScore: number | null;

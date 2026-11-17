@@ -1,4 +1,4 @@
-// Reference tests: every created painting made against a built-in reference,
+// Reference tests: every painting made against a built-in reference,
 // grouped into conditions whose runs can be compared with each other.
 
 import type { SizeName } from "./config";
@@ -42,7 +42,7 @@ export interface TestDetail {
   table: SeriesCell[];
 }
 
-/** Key of a created painting's condition (created paintings always have a size). */
+/** Key of a painting's condition. */
 export function conditionKey(p: PaintingSummary): string {
   return `${p.style}-${p.size}-${p.width}x${p.height}-${p.maxStrokes}`;
 }
@@ -58,7 +58,7 @@ export function conditions(paintings: PaintingSummary[]): Condition[] {
       byKey.set(key, {
         key,
         style: p.style,
-        size: p.size as SizeName,
+        size: p.size,
         width: p.width,
         height: p.height,
         maxStrokes: p.maxStrokes,
@@ -101,13 +101,13 @@ export function selectRuns(
   paintings: PaintingSummary[],
   requested: { condition?: string | null; series?: string | null },
 ): { conditions: Condition[]; condition: string | null; paintings: PaintingSummary[] } {
-  const pool = requested.series ? paintings.filter((p) => p.seriesId === requested.series) : paintings;
-  const all = conditions(pool);
+  const candidates = requested.series ? paintings.filter((p) => p.seriesId === requested.series) : paintings;
+  const all = conditions(candidates);
   const chosen = all.find((c) => c.key === requested.condition)?.key ?? all[0]?.key ?? null;
   return {
     conditions: all,
     condition: chosen,
-    paintings: pool.filter((p) => conditionKey(p) === chosen),
+    paintings: candidates.filter((p) => conditionKey(p) === chosen),
   };
 }
 

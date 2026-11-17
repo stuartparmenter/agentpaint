@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { authenticate, bearer, parseTokens } from "../src/auth";
+import { bearer } from "../src/auth";
 import { assignmentTtlMs, envNumber } from "../src/config";
 import { makeToken, PAINTING_ID, parseToken, randomId } from "../src/ids";
 import { canvasSize, findReference, REFERENCES } from "../src/references";
@@ -9,31 +9,22 @@ import { checkBounds, maxBrushSize, normalize, strokeInput } from "../src/stroke
 import { conditionKey, conditions, downsample, selectRuns, testsIndex } from "../src/tests";
 import type { PaintingSummary } from "../src/types";
 
-const TOKEN_A = "a".repeat(40);
-const TOKEN_B = "b".repeat(40);
-const CONFIG = `alice:${TOKEN_A}, bob:${TOKEN_B}`;
-
 describe("auth", () => {
-  const auth = (header: string | null, config: string | undefined = CONFIG) =>
-    authenticate(bearer(header), config);
-
-  test("accepts configured tokens and names the agent", () => {
-    expect(auth(`Bearer ${TOKEN_A}`)).toEqual({ name: "alice" });
-    expect(auth(`Bearer ${TOKEN_B}`)).toEqual({ name: "bob" });
-  });
-
-  test("rejects missing, malformed and wrong tokens", () => {
-    expect(auth(null)).toBeNull();
-    expect(auth(TOKEN_A)).toBeNull();
-    expect(auth(`Basic ${TOKEN_A}`)).toBeNull();
-    expect(auth(`Bearer ${TOKEN_A.slice(1)}`)).toBeNull();
-    expect(auth(`Bearer ${TOKEN_A}x`)).toBeNull();
-    expect(authenticate(TOKEN_A, undefined)).toBeNull();
-  });
-
-  test("ignores short tokens and bad names", () => {
-    expect(parseTokens(`short:abc, bad name:${TOKEN_A},:${TOKEN_A}`).length).toBe(0);
-    expect(auth("Bearer abc", "short:abc")).toBeNull();
+  test("reads a bearer token and rejects other header forms", () => {
+    const key = "a".repeat(32);
+    expect(bearer(`Bearer ${key}`)).toBe(key);
+    for (const header of [
+      null,
+      undefined,
+      "",
+      key,
+      `Basic ${key}`,
+      `Bearer  ${key}`,
+      `Bearer ${key} x`,
+      "Bearer ",
+    ])
+      expect(bearer(header)).toBeUndefined();
+    expect(bearer(`Bearer ${"a".repeat(257)}`)).toBeUndefined();
   });
 });
 
@@ -128,7 +119,6 @@ describe("created paintings", () => {
 
   test("the series table groups by models and strokes per assignment and averages repeats", () => {
     const base = {
-      kind: "created",
       status: "done",
       style: "landscape",
       prompt: null,
@@ -178,7 +168,6 @@ describe("reference tests", () => {
   const run = (over: Partial<PaintingSummary>): PaintingSummary =>
     ({
       id: "x",
-      kind: "created",
       status: "active",
       style: "landscape",
       prompt: null,

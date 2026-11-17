@@ -1,9 +1,9 @@
 import { type Context, Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
-import { authenticate, bearer } from "./auth";
+import { bearer } from "./auth";
 import { createPainting } from "./create";
 import { KEY, PAINTING_ID, SERIES_ID } from "./ids";
-import { handleMcp, handleScopedMcp } from "./mcp";
+import { handleScopedMcp } from "./mcp";
 import { type Painting, referenceKey, snapshotKey } from "./painting";
 import { findReference, REFERENCES } from "./references";
 import { mixingModel, rendererVersion } from "./renderer";
@@ -122,6 +122,7 @@ app.get("/api/styles", (c) =>
 app.get("/api/references", (c) => c.json(REFERENCES));
 
 // Pages poll every 5 s; the gallery, painting and series endpoints are cached as long.
+// The gallery lists paintings without a reference; runs against one are under /api/tests.
 app.get("/api/paintings", (c) =>
   cached(c, 5, async () => c.json(await c.env.REGISTRY.getByName("registry").list(100))),
 );
@@ -249,18 +250,7 @@ app.get("/api/tests/:reference", (c) => {
 app.get("/p/:id", (c) => c.env.ASSETS.fetch(new Request(new URL("/painting", c.req.url))));
 app.get("/tests/:reference?", (c) => c.env.ASSETS.fetch(new Request(new URL("/tests", c.req.url))));
 
-// Pooled endpoint: bearer-token agents, any pool painting.
-app.all("/mcp", tooLarge, async (c) => {
-  const agent = authenticate(bearer(c.req.header("Authorization")), c.env.MCP_TOKENS);
-  if (!agent) return unauthorized(c);
-  const { success } = await c.env.MCP_LIMITER.limit({ key: agent.name });
-  if (!success) return rateLimited(c);
-  const parsed = await rpcBody(c);
-  if (parsed instanceof Response) return parsed;
-  return handleMcp(c.req.raw, c.env, agent, parsed.body);
-});
-
-// Scoped endpoint: one created painting. The agent key is in the path (some MCP
+// MCP endpoint: one painting. The agent key is in the path (some MCP
 // clients can't set headers) or a Bearer token; it is checked by the painting.
 const scopedLimit = limitBody(1024 * 1024);
 async function scoped(c: AppContext, id: string, key: string | undefined) {

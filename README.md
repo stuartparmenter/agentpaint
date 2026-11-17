@@ -4,16 +4,20 @@ Paintings made by AI agents over MCP. An agent gets an assignment (`get_assignme
 an allowance of strokes. It uses them (`submit_stroke`), then gets the next assignment. AgentPaint
 measures that closed loop: the same painting, reference and stroke budget painted with the agent
 seeing the canvas before every stroke, every k strokes, or once for the whole painting, scored
-against the reference after every stroke, across a ladder of models. A public gallery shows every painting, its stroke-by-stroke history and its scores.
+against the reference after every stroke, across a ladder of models. Public pages show every
+painting, its stroke-by-stroke history and its scores.
 
 Runs on Cloudflare Workers. The paint simulation is Rust compiled to WebAssembly.
 
 ## Try it
 
-The site has two areas. **Paintings** (`/`) is a gallery of everything being painted, with a form to
-start a painting from a style and an optional prompt. **Reference tests** (`/tests`) is organized
-around the built-in reference images: each test page compares every model that has painted that
-reference, under the same settings, against it.
+The site has two areas. **Paintings** (`/`) is a gallery of paintings without a reference, with a
+form to start one from a style and an optional prompt. **Reference tests** (`/tests`) holds the
+runs against the built-in reference images: each test page compares every model that has painted
+that reference, under the same settings, against it.
+
+Every painting is created first (from either area) and then painted by an agent over the
+painting's own MCP URL. For a reference run:
 
 1. Open a reference test and use **Start a run**: pick a size (`study` is quicker), a stroke budget
    and how many strokes each assignment allows.
@@ -36,35 +40,40 @@ reference, under the same settings, against it.
    style, size and budget; a selector switches between those conditions. The model is whatever the
    painter reports when it submits strokes; runs that report none show as "(not reported)".
 
+A painting without a reference works the same way: create it with **New painting** on the home
+page (a style and an optional prompt), connect an agent to its MCP URL, and it shows in the gallery.
+
 ## How it works
 
 ```
 agent ──MCP──▶ Worker (Hono, apps/worker)
-   /mcp/p/<id>/<key>  one created painting       ├─ Registry DO (one): paintings, series, pool leases
-   /mcp (bearer)      the shared pool            └─ Painting DO (one per painting): stroke log, assignments,
+   /mcp/p/<id>/<key>  one painting               ├─ Registry DO (one): paintings, series
+                                                 └─ Painting DO (one per painting): stroke log, assignments,
                                                        WASM canvas, reference grid
                                                        ├─ renderer.wasm (crates/renderer)
                                                        └─ R2: JPEG per stroke, checkpoints, reference
-browser ──▶ pages (apps/worker/public) + /api/paintings, /api/series
+browser ──▶ pages (apps/worker/public) + /api/paintings, /api/series, /api/tests
 ```
 
 - **Ordering.** Each painting is a Durable Object, so its requests run one at a time; checking a
   token and applying its strokes happen with no `await` in between.
-- **Two ways in.** `POST /api/paintings` creates a painting with its own MCP URL (the agent key is in
-  the path, for clients that can't set headers, or a Bearer token on `/mcp/p/<id>`). The pooled
-  `/mcp` endpoint, for agents with a token from `MCP_TOKENS`, assigns pool paintings that the server
-  starts itself; created paintings never enter the pool.
-- **Assignments.** A token belongs to one painting at one version and paints once. Rejected strokes
-  (`invalid_stroke`) keep the token usable. If another stroke lands first, the
-  submit gets `stale_assignment`. Leases steer concurrent agents to different paintings; when every
-  painting is leased and no new one may start, agents share the one whose lease ends soonest.
+- **Endpoints.** `POST /api/paintings` creates a painting and returns its agent key, owner key and
+  MCP URL. The agent key is in the URL's path (`/mcp/p/<id>/<key>`), for clients that can't set
+  headers, or sent as a Bearer token to `/mcp/p/<id>`. The owner key, as a Bearer token, ends the
+  painting (`POST /api/paintings/<id>/finish`) or runs the replay check
+  (`POST /api/paintings/<id>/verify`). Read-only: `GET /api/paintings` (the gallery, paintings
+  without a reference), `/api/paintings/<id>`, `/api/paintings/<id>/strokes`,
+  `/api/paintings/<id>/v/<n>` (snapshot after stroke n), `/api/series/<id>`, `/api/tests` and
+  `/api/tests/<reference>`.
+- **Assignments.** A token belongs to one painting at one version. Rejected strokes
+  (`invalid_stroke`) keep the token usable. If another stroke lands first, the submit gets
+  `stale_assignment`.
 - **Durability.** Strokes are stored in the painting's SQLite storage. The paint buffer is
   checkpointed to R2 every 20 strokes; after an eviction the canvas is rebuilt from the checkpoint
   plus the newer strokes, deterministically (byte-identical snapshots).
 - **Memory.** A painting's canvas holds about 10 MB of WASM memory while it is being painted, and
   Durable Objects can share a 128 MB isolate. Canvases are freed after `CANVAS_IDLE_SECONDS` without
-  requests (default 600, after saving a checkpoint), and `MAX_ACTIVE_PAINTINGS` (default 6) caps how
-  many are in progress. If the renderer ever traps, the WASM instance is reset, the canvas rebuilds
+  requests (default 600, after saving a checkpoint). If the renderer ever traps, the WASM instance is reset, the canvas rebuilds
   from storage, and the agent gets `temporary_failure` with its token still valid.
 - **Styles.** Each painting has a style (figurative, landscape, abstract, minimalist) that sets its
   default stroke budget. Creative choices stay with the agents.
@@ -90,7 +99,7 @@ browser ──▶ pages (apps/worker/public) + /api/paintings, /api/series
 | ----------------- | -------------------------------------------------------------------------------------- |
 | `crates/renderer` | Rust renderer → WASM (`examples/render.rs` renders a stroke JSON file to PNG natively) |
 | `apps/worker`     | Cloudflare Worker: routes, MCP tools, Durable Objects, pages, reference images         |
-| `tools/painter`   | Bun CLI that paints with Claude (or random strokes) through the MCP endpoint           |
+| `tools/painter`   | Bun CLI that paints a painting with Claude (or random strokes) through its MCP URL     |
 | `tooling`         | WASM build, Rust install for CI, end-to-end and replay checks                          |
 
 ## Requirements
@@ -103,13 +112,11 @@ browser ──▶ pages (apps/worker/public) + /api/paintings, /api/series
 
 ```sh
 bun install
-cp apps/worker/.dev.vars.example apps/worker/.dev.vars   # then put random 32+ char tokens in it
 bun run dev            # wrangler dev on :8787 with local Durable Objects and R2
 ```
 
-The gallery is at http://127.0.0.1:8787/ and the MCP endpoint at http://127.0.0.1:8787/mcp
-(`Authorization: Bearer <token>`). Local state lives in `apps/worker/.wrangler/state`; delete it to
-start over.
+The gallery is at http://127.0.0.1:8787/. Each painting's page shows its MCP URL. Local state lives
+in `apps/worker/.wrangler/state`; delete it to start over.
 
 Checks:
 
@@ -121,23 +128,17 @@ bun run test:e2e       # against a running `bun run dev` (AGENTPAINT_URL to over
 bun tooling/replay-check.ts --keys .matrix/<series>.json   # stroke log replays byte for byte
 ```
 
-The e2e checks for agent-bound tokens need a second agent in `MCP_TOKENS`.
-
 ## Painting
 
-A created painting, until it is finished:
+A painting, through its MCP URL, until it is finished:
 
 ```sh
 bun run paint -- --url <MCP URL> --model claude-opus-5-5 [--effort high]
 bun run paint -- --url <MCP URL> --random          # random strokes, no Claude
 ```
 
-The pool, one stroke per session:
-
-```sh
-export AGENTPAINT_TOKEN=<token from MCP_TOKENS>
-bun run paint -- --url http://127.0.0.1:8787/mcp --strokes 10 --workers 2
-```
+With a URL of the form `/mcp/p/<id>` (no key in the path), the painter sends `AGENTPAINT_AGENT_KEY` as
+the agent key.
 
 Painting with Claude costs real money: every assignment sends the canvas (and the reference) as
 images. Without `--effort`, no effort is sent and each model runs at its own default effort.
@@ -148,7 +149,7 @@ Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
 - **Batches of runs.** `bun run matrix` creates its paintings as one series; the test page shows
   just that batch with `?series=<id>`, and `GET /api/series/<id>` returns its results table.
   `GET /api/tests/<reference>` returns a test's runs, score curves and table.
-- **Assignments.** A created painting's `strokes_per_assignment` sets how many strokes one
+- **Assignments.** A painting's `strokes_per_assignment` sets how many strokes one
   assignment allows. An assignment's token carries that allowance; while strokes remain,
   `get_assignment` returns the same token with no images, so the server, not the client, rations
   what the painter sees. The metadata and every `submit_stroke` reply give both counts:
@@ -185,7 +186,7 @@ Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
   effort only when `--effort` is given and the model supports that level, so by default each model
   runs at its own default effort. No fallback model is used. Every assignment is a new
   conversation, so the canvas is the only thing an assignment carries over from earlier ones. Keys
-  for the created paintings are saved to `.matrix/<series>.json`, and each assignment's thinking
+  for the paintings are saved to `.matrix/<series>.json`, and each assignment's thinking
   summaries to `.matrix/thinking/<painting id>.jsonl`.
 - **Greedy baseline.** A non-model reference point: for each stroke of the budget it tries random
   candidate strokes (same format and brush, color sampled from the reference, brush size shrinking
@@ -212,13 +213,7 @@ Needs the Workers Paid plan: rendering a stroke takes tens of milliseconds of CP
    bunx wrangler r2 bucket create agentpaint-snapshots
    bunx wrangler r2 bucket create agentpaint-snapshots-preview
    ```
-2. Set the agent tokens (`name:token` pairs, comma-separated, tokens 32+ chars):
-
-   ```sh
-   bunx wrangler secret put MCP_TOKENS                       # production
-   bunx wrangler preview base-config secret put MCP_TOKENS   # every new Preview
-   ```
-3. Connect the GitHub repo in **Workers & Pages → Create → Import a repository**, with:
+2. Connect the GitHub repo in **Workers & Pages → Create → Import a repository**, with:
    - Root directory: `/`
    - Build command: `bash tooling/install-rust.sh`
    - Deploy command: `bunx wrangler deploy -c apps/worker/wrangler.jsonc`
@@ -226,29 +221,28 @@ Needs the Workers Paid plan: rendering a stroke takes tens of milliseconds of CP
 
    The build image has no Rust, so `install-rust.sh` installs the pinned toolchain; Wrangler's build
    step then compiles the WASM (about two minutes per build).
-4. Push a branch: Workers Builds posts the Preview URL on the pull request. Each Preview gets its
+3. Push a branch: Workers Builds posts the Preview URL on the pull request. Each Preview gets its
    own Durable Objects (its own paintings) and uses the preview bucket.
 
-Preview URLs are public, like the gallery; only `/mcp` needs a token. Put previews behind
-Cloudflare Access if you want them private.
+Preview URLs are public, like the gallery, and anyone can create paintings on them. Put previews
+behind Cloudflare Access if you want them private.
 
 ### Hardening checklist
 
-- Use different `MCP_TOKENS` for previews and production: preview builds run any branch's code.
 - Don't let Workers Builds build pull requests from forks; the build installs Rust and downloads
   wasm-bindgen.
 - Add an R2 lifecycle rule that expires objects in `agentpaint-snapshots-preview`
   (`wrangler r2 bucket lifecycle add`), since previews never clean up after themselves.
 - On a custom domain, add a WAF rate-limiting rule for `/api/*`. The public API is cached at the edge
   for a few seconds, but a flood of distinct URLs still reaches the Worker.
-- The MCP endpoint rejects JSON-RPC batches, limits each agent to 120 requests a minute, and binds
-  assignment tokens to the agent that requested them.
+- The MCP endpoint rejects JSON-RPC batches, and an assignment's token works only on its own
+  painting.
 
 Snapshots are JPEGs kept for every stroke (100-300 KB each), so a finished 800-stroke painting is
 roughly 100-250 MB in R2. `POST /api/paintings` is public and limited to 20 per minute per IP. At
-most `MAX_CREATED_PAINTINGS` (default 100) created paintings are in progress at once, and at most
+most `MAX_CREATED_PAINTINGS` (default 100) paintings are in progress at once, and at most
 `MAX_CREATED_PER_CLIENT` (default 30) from one client; the Registry stores only a salted hash of the
-client's address. A created painting with no stroke after an hour expires, and one with no stroke for
+client's address. A painting with no stroke after an hour expires, and one with no stroke for
 `CREATED_IDLE_SECONDS` (default 6 hours) is finished as it stands. Painting ids are public, so a
 painting's MCP endpoint limits each client to 120 requests a minute before checking the key, and the
 painting to 120 a minute after. Invocation logs are off because a painting's agent key is part of its

@@ -1,24 +1,8 @@
-import {
-  assignmentBadge,
-  el,
-  getJson,
-  loadReferences,
-  playback,
-  poll,
-  snapshotUrl,
-  statusBadge,
-} from "./common.js";
+import { assignmentBadge, el, getJson, playback, poll, snapshotUrl, statusBadge } from "./common.js";
 import { createForm, prefillFromQuery } from "./create-form.js";
 
 const state = new Map(); // id -> { strokeCount, viewing, player, els }
 const container = document.getElementById("paintings");
-// Reference titles for the test badges, keyed by id; badges use the id until these load.
-const referenceTitles = new Map();
-loadReferences()
-  .then((refs) => {
-    for (const r of refs) referenceTitles.set(r.id, r.title);
-  })
-  .catch(() => {});
 
 // The create form: open on wide screens or when prefilled from the URL, collapsed on narrow ones.
 const prefill = prefillFromQuery(location.search);
@@ -70,28 +54,13 @@ function updateCard(p, s) {
   prompt.textContent = p.prompt ?? "Open subject";
   prompt.title = prompt.textContent;
   style.textContent = `${p.style} · ${p.strokeCount}/${p.maxStrokes} strokes`;
-  // Status can change without a new stroke (done → archived), so badges always refresh.
-  badges.replaceChildren(
-    ...(p.reference ? [testBadge(p.reference)] : []),
-    ...(p.kind === "created" ? [assignmentBadge(p)] : []),
-    statusBadge(p.status),
-  );
+  // Status can change without a new stroke (the owner finishes it), so badges always refresh.
+  badges.replaceChildren(assignmentBadge(p), statusBadge(p.status));
   const followingLatest = s.viewing === s.strokeCount;
   s.strokeCount = p.strokeCount;
   slider.max = p.strokeCount;
   if (followingLatest && !s.player.playing) show(p.id, s, p.strokeCount);
   else label(s);
-}
-
-/** "Test: Sunset" linking to the reference's test page; the short title is the text before the first comma. */
-function testBadge(reference) {
-  const title = referenceTitles.get(reference) ?? reference;
-  return el("a", {
-    className: "badge test",
-    href: `/tests/${encodeURIComponent(reference)}`,
-    textContent: `Test: ${title.split(",")[0]}`,
-    title: `Reference test: ${title}`,
-  });
 }
 
 function label(s) {
@@ -113,7 +82,7 @@ async function refresh() {
       container.append(
         el("p", {
           className: "empty",
-          textContent: "No paintings yet. Create one, or connect an agent to start painting.",
+          textContent: "No paintings yet. Create one, then connect an agent to it.",
         }),
       );
       return;

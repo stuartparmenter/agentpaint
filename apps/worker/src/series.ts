@@ -2,7 +2,7 @@ import type { PaintingSummary } from "./types";
 
 export const NOT_REPORTED = "(not reported)";
 
-/** Whether a created painting is finished (created paintings are never archived). */
+/** Whether a painting is finished. */
 export function isFinished(p: PaintingSummary): boolean {
   return p.status === "done";
 }
