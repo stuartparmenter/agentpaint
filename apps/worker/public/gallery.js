@@ -1,8 +1,15 @@
-import { el, lookLabel, preload, snapshotUrl } from "./common.js";
+import { el, loadReferences, lookLabel, preload, snapshotUrl } from "./common.js";
 import { createForm, prefillFromQuery } from "./create-form.js";
 
 const state = new Map(); // id -> { strokeCount, viewing, playing, gen, els }
 const container = document.getElementById("paintings");
+// Reference titles for the test badges, keyed by id; badges use the id until these load.
+const referenceTitles = new Map();
+loadReferences()
+  .then((refs) => {
+    for (const r of refs) referenceTitles.set(r.id, r.title);
+  })
+  .catch(() => {});
 
 // The create form: open on wide screens or when prefilled from the URL, collapsed on narrow ones.
 const prefill = prefillFromQuery(location.search);
@@ -56,21 +63,34 @@ function updateCard(p, s) {
   style.textContent = `${p.style} · ${p.strokeCount}/${p.maxStrokes} strokes`;
   // Status can change without a new stroke (done → archived), so badges always refresh.
   const status = el("span", { className: `badge ${p.status}`, textContent: p.status });
+  const items = [];
+  if (p.reference) items.push(testBadge(p.reference));
   if (p.kind === "created") {
     const look = el("span", {
       className: "badge look",
       textContent: lookLabel(p.strokesPerLook, p.maxStrokes),
     });
     look.title = "Look setting";
-    badges.replaceChildren(look, status);
-  } else {
-    badges.replaceChildren(status);
+    items.push(look);
   }
+  badges.replaceChildren(...items, status);
   const followingLatest = s.viewing === s.strokeCount;
   s.strokeCount = p.strokeCount;
   slider.max = p.strokeCount;
   if (followingLatest && !s.playing) show(p.id, s, p.strokeCount);
   else label(s);
+}
+
+/** "Test: Sunset" linking to the reference's test page; the short title is the text before the first comma. */
+function testBadge(reference) {
+  const title = referenceTitles.get(reference) ?? reference;
+  const badge = el("a", {
+    className: "badge look",
+    href: `/tests/${encodeURIComponent(reference)}`,
+    textContent: `Test: ${title.split(",")[0]}`,
+  });
+  badge.title = `Reference test: ${title}`;
+  return badge;
 }
 
 function label(s) {

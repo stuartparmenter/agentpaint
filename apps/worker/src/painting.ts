@@ -13,7 +13,6 @@ import {
 import { digestsEqual, makeToken, randomId, sha256Hex, TOKEN_SECRET_LENGTH } from "./ids";
 import type { PaintingStats, PaintingStatus, PaintingSummary } from "./registry";
 import { Canvas, resetRenderer, validateStroke } from "./renderer";
-import { addMissingColumns } from "./schema";
 import { type BatchStrokeInput, checkBounds, normalize, scaledMinBrush } from "./stroke";
 import { currentPhase, isStyleName, STYLES, type Style } from "./styles";
 
@@ -168,35 +167,6 @@ export class Painting extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    // Paintings stored by older versions lack some columns and tables.
-    if (this.hasMeta()) {
-      addMissingColumns(this.sql, "meta", {
-        kind: "TEXT NOT NULL DEFAULT 'pool'",
-        strokes_per_look: "INTEGER NOT NULL DEFAULT 1",
-        phases: "TEXT NOT NULL DEFAULT 'enforced'",
-        reference: "TEXT",
-        agent_key_hash: "TEXT",
-        owner_key_hash: "TEXT",
-        looks: "INTEGER NOT NULL DEFAULT 0",
-      });
-      addMissingColumns(this.sql, "strokes", {
-        look: "INTEGER NOT NULL DEFAULT 0",
-        think_ms: "INTEGER",
-        score: "REAL",
-        note: "TEXT",
-        model: "TEXT",
-        effort: "TEXT",
-        input_tokens: "INTEGER",
-        output_tokens: "INTEGER",
-        prompt_hash: "TEXT",
-      });
-      addMissingColumns(this.sql, "tokens", {
-        expires_at: "INTEGER NOT NULL DEFAULT 0",
-        remaining: "INTEGER NOT NULL DEFAULT 0",
-        look: "INTEGER NOT NULL DEFAULT 0",
-      });
-      this.sql.exec("CREATE TABLE IF NOT EXISTS reference (grid BLOB NOT NULL)");
-    }
   }
 
   /** Create the painting's state from its registry entry (idempotent). */
@@ -529,6 +499,17 @@ export class Painting extends DurableObject<Env> {
           prompt_hash FROM strokes ORDER BY version`,
       )
       .toArray();
+  }
+
+  /** Score after each stroke, as [stroke, score] pairs (empty without a reference). */
+  async scoreCurve(): Promise<[number, number][]> {
+    if (!this.meta()) return [];
+    return this.sql
+      .exec<{ version: number; score: number }>(
+        "SELECT version, score FROM strokes WHERE score IS NOT NULL ORDER BY version",
+      )
+      .toArray()
+      .map((r) => [r.version, r.score]);
   }
 
   /** Frees an idle canvas, and expires created paintings that were never painted. */

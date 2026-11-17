@@ -183,10 +183,6 @@
 .owner {
   border-color: var(--accent);
 }
-.duplicate-body {
-  border-top: 1px solid var(--border);
-  padding-top: 12px;
-}
 .chart-panel {
   min-width: 0;
 }
@@ -194,69 +190,181 @@
   font-size: 15px;
 }
 
-/* Series page. */
-.series-page {
-  display: grid;
-  gap: 20px;
-  grid-template-columns: minmax(0, 1fr);
-}
-.series-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px 16px;
-}
-.series-grid {
+/* Reference tests. */
+.test-grid {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 230px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr));
+  margin-top: 16px;
 }
-.series-card {
+.test-card {
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 12px;
   overflow: hidden;
-  display: grid;
-  align-content: start;
   min-width: 0;
 }
-.series-card img {
+.test-card img {
   display: block;
   width: 100%;
   height: auto;
   background: var(--canvas-bg);
 }
-.series-card .body {
-  padding: 10px 12px 12px;
+.test-card .body {
+  padding: 12px 14px 14px;
   display: grid;
+  gap: 4px;
+}
+.tests-intro {
+  display: grid;
+  gap: 4px;
+  max-width: 70ch;
+}
+.test-page {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: minmax(0, 1fr);
+}
+.test-head {
+  display: grid;
+  gap: 16px 24px;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+@media (min-width: 800px) {
+  .test-head {
+    grid-template-columns: minmax(0, 2fr) minmax(0, 3fr);
+  }
+}
+.test-head-text {
+  display: grid;
+  gap: 10px;
+  max-width: 60ch;
+}
+.test-head-text select {
+  width: auto;
+  max-width: 100%;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
   gap: 6px;
   font-size: 13px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 999px;
+  padding: 2px 4px 2px 12px;
 }
-.series-card .title {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-weight: 600;
-  min-width: 0;
-}
-.series-card .title a {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.series-card .meta {
+.chip-clear {
+  font: inherit;
+  font-size: 16px;
+  line-height: 1;
+  background: none;
+  border: 0;
   color: var(--muted);
+  cursor: pointer;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+}
+.chip-clear:hover {
+  color: var(--text);
+  background: var(--bg);
 }
 .facets {
   display: grid;
   gap: 16px;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
 }
 .facet {
   display: grid;
   gap: 6px;
   min-width: 0;
 }
-.facet h3 {
+.lanes {
+  display: grid;
+  gap: 12px;
+}
+.lane {
+  --lane: var(--series-other);
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--lane);
+  border-radius: 10px;
+  padding: 12px 14px 14px;
+  display: grid;
+  gap: 10px;
+}
+.lane-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
   overflow-wrap: anywhere;
+}
+.lane-key {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--lane);
+}
+.lane-cells {
+  display: grid;
+  gap: 12px 16px;
+  grid-template-columns: repeat(var(--cols, 3), minmax(0, 1fr));
+}
+@media (max-width: 599px) {
+  .lane-cells {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  /* On phones each run puts its canvas beside its numbers. */
+  .run {
+    grid-template-columns: 120px minmax(0, 1fr);
+    column-gap: 10px;
+    align-items: start;
+  }
+  .run > a {
+    grid-row: span 3;
+  }
+}
+.lane-cell {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-width: 0;
+}
+.lane-cell h4 {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+}
+.run {
+  display: grid;
+  gap: 2px;
+}
+.run + .run {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.thumb {
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  height: auto;
+  border-radius: 6px;
+  background: var(--canvas-bg);
+  border: 1px solid var(--border);
+  margin-bottom: 4px;
+}
+.run-score {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.start-run {
+  max-width: 720px;
+}
+.start-run h3 {
+  margin-top: 8px;
 }

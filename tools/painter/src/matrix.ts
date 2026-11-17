@@ -244,4 +244,5 @@ if (!sent && !args.random) console.log("(no request parameters recorded)");
 const failed = cells.filter((c) => c.error);
 if (failed.length)
   console.log(`\n${failed.length} painting(s) failed: ${failed.map((c) => c.id).join(", ")}`);
-console.log(`\nSeries page: ${origin}/s/${series.id}`);
+if (args.reference) console.log(`\nResults: ${origin}/tests/${args.reference}?series=${series.id}`);
+else for (const c of cells) console.log(`${origin}/p/${c.id}`);

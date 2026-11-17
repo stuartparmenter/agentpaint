@@ -230,7 +230,7 @@ export function buildScopedServer(env: Env, paintingId: string): McpServer {
           .optional()
           .describe("A batch of strokes, applied in order"),
         finished: z.boolean().optional().describe("End the painting after these strokes"),
-        model: z.string().max(100).optional(),
+        model: z.string().max(100).optional().describe("Your model id, if you know it (optional)"),
         effort: z.string().max(20).optional(),
         input_tokens: z.number().int().min(0).max(1e9).optional(),
         output_tokens: z.number().int().min(0).max(1e9).optional(),

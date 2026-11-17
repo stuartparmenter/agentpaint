@@ -1,4 +1,4 @@
-// Shared helpers for the gallery, painting and series pages.
+// Shared helpers for the paintings and reference test pages.
 
 /** Creates an element, assigns its properties and appends children (nodes or strings). */
 export function el(tag, props = {}, children = []) {
@@ -55,14 +55,6 @@ export function saveJson(key, value) {
 export const paintingKey = (id) => `agentpaint:painting:${id}`;
 export const seriesKey = (id) => `agentpaint:series:${id}`;
 
-export function loadSeriesKey(seriesId) {
-  try {
-    return localStorage.getItem(seriesKey(seriesId));
-  } catch {
-    return null;
-  }
-}
-
 export function saveSeriesKey(seriesId, key) {
   try {
     localStorage.setItem(seriesKey(seriesId), key);
@@ -106,9 +98,14 @@ export function lookLabel(strokesPerLook, maxStrokes) {
   return strokesPerLook === 1 ? "1 stroke per look" : `${strokesPerLook} strokes per look`;
 }
 
-/** A painting's models as one label, the same join the series table uses. */
+/** A painting's models as one label, the same join the results table uses. */
 export function modelsLabel(models) {
-  return models?.length ? models.join(" + ") : "(none reported)";
+  return models?.length ? models.join(" + ") : "(not reported)";
+}
+
+/** The settings that make two reference runs comparable, as the tests API keys them. */
+export function conditionKey(p) {
+  return `${p.style}-${p.size ?? "custom"}-${p.width}x${p.height}-${p.maxStrokes}-${p.phases}`;
 }
 
 /** A status pill; the class picks its color. */
@@ -135,13 +132,15 @@ export async function copyText(button, text) {
 /** A read-only value with a copy button. */
 export function copyField(labelText, value) {
   const id = `copy-${Math.random().toString(36).slice(2, 9)}`;
-  const input = el("input", {
+  // A long value (such as a command) wraps in a text area instead of scrolling in one line.
+  const long = value.length > 90;
+  const input = el(long ? "textarea" : "input", {
     id,
-    type: "text",
     readOnly: true,
     value,
     className: "mono",
     spellcheck: false,
+    ...(long ? { rows: 3 } : { type: "text" }),
   });
   input.addEventListener("focus", () => input.select());
   const button = el("button", { type: "button", className: "button small", textContent: "Copy" });
@@ -163,16 +162,26 @@ export function loadReferences() {
   return referencesPromise;
 }
 
-/** "Title" by Artist, License (linked), Source (linked). */
+/** "Title" by Artist, License (linked), Source (linked); takes either API's field names. */
 export function attribution(ref) {
   const parts = [
     el("cite", { textContent: ref.title }),
     " by ",
     ref.artist,
     ", ",
-    el("a", { href: ref.license_url, textContent: ref.license, rel: "license noreferrer", target: "_blank" }),
+    el("a", {
+      href: ref.license_url ?? ref.licenseUrl,
+      textContent: ref.license,
+      rel: "license noreferrer",
+      target: "_blank",
+    }),
     " · ",
-    el("a", { href: ref.source_url, textContent: "source", rel: "noreferrer", target: "_blank" }),
+    el("a", {
+      href: ref.source_url ?? ref.sourceUrl,
+      textContent: "source",
+      rel: "noreferrer",
+      target: "_blank",
+    }),
   ];
   return el("span", { className: "attribution" }, parts);
 }

@@ -1,70 +1,65 @@
-// The "new painting" form, used on the home page and (prefilled, joining a
-// series) on a painting's page.
+// The create form. On the home page it asks for a style and prompt, with the
+// stroke budget and look setting under "More options". On a reference test
+// page it fixes the reference and prefills the test's condition.
 
-import { attribution, el, getJson, loadReferences, paintingKey, saveJson, saveSeriesKey } from "./common.js";
+import { el, getJson, paintingKey, saveJson, saveSeriesKey } from "./common.js";
 
-const STYLES = [
-  ["landscape", "Landscape"],
-  ["figurative", "Figurative"],
-  ["abstract", "Abstract"],
-  ["minimalist", "Minimalist"],
-];
-const SIZES = [
-  ["full", "Full", "1024 px on the long side."],
-  ["study", "Study", "512 px on the long side, about a quarter of the strokes."],
-];
-const PHASES = [
-  ["off", "Off"],
-  ["guidance", "Guidance"],
-  ["enforced", "Enforced"],
-];
-const PHASE_HELP = {
-  off: "The agent gets no phase information.",
-  guidance: "The agent is told the current phase (foundation → detail) and its guidance.",
-  enforced: "Guidance, plus each phase's minimum brush size is enforced.",
-};
+const STYLES = ["landscape", "figurative", "abstract", "minimalist"];
+const PHASES = ["off", "guidance", "enforced"];
+const LOOK_HELP =
+  "1 = a look at the canvas before every stroke; larger = several strokes per look; equal to max strokes = one look for the whole painting.";
 
 let counter = 0;
 
+/** Style budgets from the API ({name, max_strokes: {full, study}}), loaded once. */
+let stylesPromise = null;
+function loadStyles() {
+  stylesPromise ??= getJson("/api/styles").catch(() => []);
+  return stylesPromise;
+}
+
 function field(labelText, control, help) {
-  const id = control.id || `f${++counter}`;
-  control.id = id;
-  const children = [el("label", { htmlFor: id, textContent: labelText }), control];
+  control.id ||= `f${++counter}`;
+  const children = [el("label", { htmlFor: control.id, textContent: labelText }), control];
   if (help) {
-    const helpEl = el("div", { className: "help", id: `${id}-help`, textContent: help });
+    const helpEl = el("div", { className: "help", id: `${control.id}-help`, textContent: help });
     control.setAttribute("aria-describedby", helpEl.id);
     children.push(helpEl);
   }
   return el("div", { className: "field" }, children);
 }
 
-function radios(name, legendText, options, value) {
-  const group = el(
-    "div",
-    { className: "segmented" },
-    options.map(([v, text]) =>
-      el("label", {}, [el("input", { type: "radio", name, value: v, checked: v === value }), text]),
-    ),
+function select(name, options, value) {
+  const s = el(
+    "select",
+    { name },
+    options.map((v) => el("option", { value: v, textContent: v[0].toUpperCase() + v.slice(1) })),
   );
-  return el("fieldset", { className: "field" }, [el("legend", { textContent: legendText }), group]);
+  s.value = options.includes(value) ? value : options[0];
+  return s;
+}
+
+function numberInput(name, value, placeholder) {
+  return el("input", {
+    type: "number",
+    name,
+    min: 1,
+    max: 2000,
+    step: 1,
+    inputMode: "numeric",
+    value: value ?? "",
+    placeholder: placeholder ?? "",
+  });
 }
 
 /**
  * Builds the form.
  * @param {object} [options]
- * @param {object} [options.prefill] {style, prompt, reference, size, max_strokes, strokes_per_look, phases}
- * @param {{id: string, key: string}} [options.series] posts into this series when set
- * @param {string} [options.submitLabel]
+ * @param {object} [options.prefill] {style, prompt, max_strokes, strokes_per_look}
+ * @param {object} [options.test] {reference, style, size, max_strokes, phases}: test mode
  */
-export function createForm({ prefill = {}, series = null, submitLabel = "Create painting" } = {}) {
-  const name = `cf${++counter}`;
-  const style = el(
-    "select",
-    { name: "style" },
-    STYLES.map(([v, text]) => el("option", { value: v, textContent: text })),
-  );
-  style.value = STYLES.some(([v]) => v === prefill.style) ? prefill.style : "landscape";
-
+export function createForm({ prefill = {}, test = null } = {}) {
+  const style = select("style", STYLES, test?.style ?? prefill.style);
   const prompt = el("textarea", {
     name: "prompt",
     rows: 2,
@@ -72,126 +67,56 @@ export function createForm({ prefill = {}, series = null, submitLabel = "Create 
     placeholder: "Leave empty for an open subject",
     value: prefill.prompt ?? "",
   });
+  const size = select("size", ["study", "full"], test?.size);
+  const phases = select("phases", PHASES, test?.phases);
+  const maxStrokes = numberInput("max_strokes", test?.max_strokes ?? prefill.max_strokes, "Style default");
+  const perLook = numberInput("strokes_per_look", prefill.strokes_per_look ?? 1);
+  perLook.required = true;
 
-  const reference = el("select", { name: "reference" }, [el("option", { value: "", textContent: "None" })]);
-  const preview = el("div", { className: "reference-preview", hidden: true });
-  let references = [];
-  loadReferences()
-    .then((list) => {
-      references = list;
-      for (const r of list) reference.append(el("option", { value: r.id, textContent: r.title }));
-      if (prefill.reference && list.some((r) => r.id === prefill.reference))
-        reference.value = prefill.reference;
-      updatePreview();
-    })
-    .catch(() => {
-      reference.disabled = true;
-      reference.title = "References could not be loaded";
-    });
-  function updatePreview() {
-    const r = references.find((x) => x.id === reference.value);
-    preview.hidden = !r;
-    if (!r) return preview.replaceChildren();
-    preview.replaceChildren(
-      el("img", {
-        src: r.url,
-        alt: `Reference: ${r.title}`,
-        width: 96,
-        height: Math.round((96 * r.height) / r.width),
-      }),
-      el("div", {}, [
-        el("div", { textContent: "The agent sees this image and each stroke is scored against it." }),
-        attribution(r),
-      ]),
-    );
+  // The max strokes placeholder shows the budget the API applies when it's empty.
+  async function syncBudget() {
+    const styles = await loadStyles();
+    const budget = styles.find((s) => s.name === style.value)?.max_strokes;
+    const sizeName = test ? size.value : "full";
+    maxStrokes.placeholder = budget ? `Default ${budget[sizeName]}` : "Style default";
+    return budget?.[sizeName] ?? null;
   }
-  reference.addEventListener("change", updatePreview);
+  style.addEventListener("change", syncBudget);
+  size.addEventListener("change", syncBudget);
+  syncBudget();
 
-  const size = radios(`${name}-size`, "Size", SIZES, prefill.size === "study" ? "study" : "full");
-  const sizeHelp = el("div", { className: "help" });
-  size.append(sizeHelp);
-
-  const maxStrokes = el("input", {
-    type: "number",
-    name: "max_strokes",
-    min: 1,
-    max: 2000,
-    step: 1,
-    inputMode: "numeric",
-    placeholder: "Style default",
-    value: prefill.max_strokes ?? "",
-  });
-  const perLook = el("input", {
-    type: "number",
-    name: "strokes_per_look",
-    min: 1,
-    max: 2000,
-    step: 1,
-    inputMode: "numeric",
-    required: true,
-    value: prefill.strokes_per_look ?? 1,
-  });
-
-  const phases = radios(
-    `${name}-phases`,
-    "Phases",
-    PHASES,
-    PHASES.some(([v]) => v === prefill.phases) ? prefill.phases : "off",
-  );
-  const phaseHelp = el("div", { className: "help" });
-  phases.append(phaseHelp);
-
-  // Each style's default stroke budget per size, from /api/styles.
-  let budgets = null;
-  fetch("/api/styles")
-    .then((r) => (r.ok ? r.json() : null))
-    .then((list) => {
-      budgets = list;
-      syncHelp();
-    })
-    .catch(() => {});
-
-  function syncHelp() {
-    const s = form.querySelector(`input[name="${name}-size"]:checked`)?.value ?? "full";
-    sizeHelp.textContent = SIZES.find(([v]) => v === s)?.[2] ?? "";
-    const budget = budgets?.find((b) => b.name === style.value)?.max_strokes?.[s];
-    maxStrokes.placeholder = budget ? `Default: ${budget}` : "Style default";
-    const ph = form.querySelector(`input[name="${name}-phases"]:checked`)?.value ?? "off";
-    phaseHelp.textContent = PHASE_HELP[ph];
-  }
+  const lookField = field("Strokes per look", perLook, LOOK_HELP);
+  const moreOpen = Boolean(prefill.max_strokes || Number(prefill.strokes_per_look) > 1);
+  const fields = test
+    ? [
+        lookField,
+        el("details", { className: "more" }, [
+          el("summary", { textContent: "Change settings" }),
+          el("div", { className: "more-body" }, [
+            field("Style", style),
+            el("div", { className: "field-pair" }, [field("Size", size), field("Phases", phases)]),
+            field("Max strokes", maxStrokes),
+          ]),
+        ]),
+      ]
+    : [
+        field("Style", style),
+        field("Prompt (optional)", prompt),
+        el("details", { className: "more", open: moreOpen }, [
+          el("summary", { textContent: "More options" }),
+          el("div", { className: "more-body" }, [field("Max strokes", maxStrokes), lookField]),
+        ]),
+      ];
 
   const error = el("div", { className: "error", hidden: true });
   error.setAttribute("role", "alert");
+  const submitLabel = test ? "Create the run" : "Create painting";
   const submit = el("button", { type: "submit", className: "button primary", textContent: submitLabel });
-
   const form = el("form", { className: "create-form", noValidate: true }, [
-    series
-      ? el("p", {
-          className: "notice",
-          textContent:
-            "The new painting joins this painting's series, so their results are compared side by side.",
-        })
-      : null,
-    field("Style", style),
-    field("Prompt (optional)", prompt),
-    field("Reference", reference, "With a reference, every stroke gets a similarity score."),
-    preview,
-    size,
-    el("div", { className: "field-pair" }, [
-      field("Max strokes (optional)", maxStrokes),
-      field("Strokes per look", perLook),
-    ]),
-    el("div", {
-      className: "help small muted",
-      textContent:
-        "Strokes per look: 1 = a look at the canvas before every stroke; larger = several strokes per look; equal to max strokes = one look for the whole painting. Max strokes defaults to the style's budget for the size.",
-    }),
-    phases,
+    ...fields,
     error,
     el("div", { className: "button-row" }, [submit]),
   ]);
-  form.addEventListener("change", syncHelp);
-  syncHelp();
 
   function showError(message, issues) {
     error.replaceChildren(el("div", { textContent: message }));
@@ -210,37 +135,28 @@ export function createForm({ prefill = {}, series = null, submitLabel = "Create 
     e.preventDefault();
     error.hidden = true;
     const body = { style: style.value };
-    const text = prompt.value.trim();
-    body.prompt = text ? text : null;
-    body.reference = reference.value || null;
-    body.size = form.querySelector(`input[name="${name}-size"]:checked`)?.value ?? "full";
-    body.phases = form.querySelector(`input[name="${name}-phases"]:checked`)?.value ?? "off";
+    if (test) Object.assign(body, { reference: test.reference, size: size.value, phases: phases.value });
+    else body.prompt = prompt.value.trim() || null;
     const max = maxStrokes.value.trim();
     if (max) {
       const n = Number(max);
       if (!Number.isInteger(n) || n < 1 || n > 2000) {
         showError("Max strokes must be a whole number from 1 to 2000.");
-        maxStrokes.focus();
-        return;
+        return maxStrokes.focus();
       }
       body.max_strokes = n;
     }
     const spl = Number(perLook.value);
+    const budget = body.max_strokes ?? (await syncBudget());
     if (!Number.isInteger(spl) || spl < 1) {
       showError("Strokes per look must be a whole number of at least 1.");
-      perLook.focus();
-      return;
+      return perLook.focus();
     }
-    if (body.max_strokes && spl > body.max_strokes) {
-      showError("Strokes per look can't be more than max strokes.");
-      perLook.focus();
-      return;
+    if (budget && spl > budget) {
+      showError(`Strokes per look can't be more than max strokes (${budget}).`);
+      return perLook.focus();
     }
     body.strokes_per_look = spl;
-    if (series) {
-      body.series = series.id;
-      body.series_key = series.key;
-    }
 
     submit.disabled = true;
     submit.textContent = "Creating…";
@@ -250,20 +166,17 @@ export function createForm({ prefill = {}, series = null, submitLabel = "Create 
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const seriesKeyValue = created.series_key ?? series?.key ?? null;
       saveJson(paintingKey(created.id), {
         agent_key: created.agent_key,
         owner_key: created.owner_key,
         mcp_url: created.mcp_url,
         series_id: created.series_id,
-        series_key: seriesKeyValue,
+        series_key: created.series_key,
       });
       if (created.series_key) saveSeriesKey(created.series_id, created.series_key);
       location.assign(`/p/${encodeURIComponent(created.id)}`);
     } catch (err) {
       const messages = {
-        403: "This browser doesn't have the right key for that series.",
-        404: "That series doesn't exist.",
         409: "There are too many paintings right now. Try again later.",
         429: "Too many paintings created from here. Wait a minute and try again.",
       };
@@ -279,33 +192,26 @@ export function createForm({ prefill = {}, series = null, submitLabel = "Create 
   return form;
 }
 
-/** Form settings for a painting, for prefilling a duplicate. */
-export function prefillFrom(p) {
-  return {
-    style: p.style,
-    prompt: p.prompt ?? "",
-    reference: p.reference ?? "",
-    size: p.size ?? "full",
-    max_strokes: p.maxStrokes,
-    strokes_per_look: p.strokesPerLook,
-    phases: p.phases,
-  };
-}
+const QUERY_KEYS = ["style", "prompt", "max_strokes", "strokes_per_look"];
 
-/** Prefill from `?style=…&prompt=…` on the home page. */
+/** Prefill from `?style=…&prompt=…` on the home page, or null without one. */
 export function prefillFromQuery(search) {
   const q = new URLSearchParams(search);
-  const keys = ["style", "prompt", "reference", "size", "max_strokes", "strokes_per_look", "phases"];
-  if (!keys.some((k) => q.has(k))) return null;
+  if (!QUERY_KEYS.some((k) => q.has(k))) return null;
   const out = {};
-  for (const k of keys) if (q.has(k)) out[k] = q.get(k);
+  for (const k of QUERY_KEYS) if (q.has(k)) out[k] = q.get(k);
   return out;
 }
 
-/** Query string that `prefillFromQuery` reads back. */
+/** The home page query that `prefillFromQuery` reads back, for a painting's settings. */
 export function prefillQuery(p) {
+  const values = {
+    style: p.style,
+    prompt: p.prompt,
+    max_strokes: p.maxStrokes,
+    strokes_per_look: p.strokesPerLook,
+  };
   const q = new URLSearchParams();
-  for (const [k, v] of Object.entries(prefillFrom(p)))
-    if (v !== "" && v !== null && v !== undefined) q.set(k, v);
+  for (const [k, v] of Object.entries(values)) if (v !== null && v !== undefined && v !== "") q.set(k, v);
   return `?${q}`;
 }

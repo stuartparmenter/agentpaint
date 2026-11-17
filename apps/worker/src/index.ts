@@ -5,11 +5,12 @@ import { createPainting } from "./create";
 import { KEY, PAINTING_ID, SERIES_ID } from "./ids";
 import { handleMcp, handleScopedMcp } from "./mcp";
 import { referenceKey, snapshotKey } from "./painting";
-import { REFERENCES } from "./references";
+import { findReference, REFERENCES } from "./references";
 import { mixingModel, rendererVersion } from "./renderer";
 import { seriesTable } from "./series";
 import { createInput, studyBudget } from "./settings";
 import { STYLE_NAMES, STYLES } from "./styles";
+import { downsample, selectRuns, type TestDetail, testsIndex } from "./tests";
 
 export { Painting } from "./painting";
 export { Registry } from "./registry";
@@ -204,9 +205,50 @@ app.get("/api/series/:id", async (c) => {
   });
 });
 
-// Pages for one painting and one series (static HTML that reads the API).
+// Reference tests: each built-in reference with the runs made against it.
+const MAX_TEST_RUNS = 300;
+const CURVE_POINTS = 200;
+
+app.get("/api/tests", (c) =>
+  cached(c, 10, async () => {
+    const runs = await c.env.REGISTRY.getByName("registry").withReference(null, 5000);
+    return c.json(testsIndex(REFERENCES, runs));
+  }),
+);
+
+app.get("/api/tests/:reference", (c) => {
+  const reference = findReference(c.req.param("reference"));
+  if (!reference) return c.notFound();
+  const series = c.req.query("series") ?? null;
+  if (series !== null && !SERIES_ID.test(series)) return c.json({ error: "bad series id" }, 400);
+  return cached(c, 10, async () => {
+    const runs = await c.env.REGISTRY.getByName("registry").withReference(reference.id, MAX_TEST_RUNS);
+    const selected = selectRuns(runs, { condition: c.req.query("condition"), series });
+    const curves = Object.fromEntries(
+      await Promise.all(
+        selected.paintings.map(async (p) => {
+          const curve = await c.env.PAINTING.getByName(p.id).scoreCurve();
+          return [p.id, downsample(curve as [number, number][], CURVE_POINTS)] as const;
+        }),
+      ),
+    );
+    const first = selected.paintings[0];
+    const detail: TestDetail = {
+      reference,
+      ...selected,
+      series,
+      anchors: { blank: first?.blankScore ?? null, meanColor: first?.meanColorScore ?? null },
+      curves,
+      table: seriesTable(selected.paintings),
+    };
+    return c.json(detail);
+  });
+});
+
+// Pages (static HTML that reads the API).
 app.get("/p/:id", (c) => c.env.ASSETS.fetch(new Request(new URL("/painting", c.req.url))));
-app.get("/s/:id", (c) => c.env.ASSETS.fetch(new Request(new URL("/series", c.req.url))));
+app.get("/tests", (c) => c.env.ASSETS.fetch(new Request(new URL("/tests", c.req.url))));
+app.get("/tests/:reference", (c) => c.env.ASSETS.fetch(new Request(new URL("/tests", c.req.url))));
 
 // Pooled endpoint: bearer-token agents, any pool painting.
 app.all("/mcp", tooLarge, async (c) => {

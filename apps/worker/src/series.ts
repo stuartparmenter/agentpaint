@@ -1,7 +1,9 @@
 import type { PaintingSummary } from "./types";
 
+export const NOT_REPORTED = "(not reported)";
+
 export interface SeriesCell {
-  /** Self-reported models, joined; "(none reported)" for random or unlabeled painters. */
+  /** Self-reported models, joined; "(not reported)" when the painter reports none. */
   models: string;
   strokes_per_look: number;
   paintings: number;
@@ -20,7 +22,7 @@ const mean = (values: number[]) => (values.length ? values.reduce((a, b) => a + 
 export function seriesTable(paintings: PaintingSummary[]): SeriesCell[] {
   const cells = new Map<string, PaintingSummary[]>();
   for (const p of paintings) {
-    const models = p.models.length ? p.models.join(" + ") : "(none reported)";
+    const models = p.models.length ? p.models.join(" + ") : NOT_REPORTED;
     const key = `${models}\u0000${p.strokesPerLook}`;
     cells.set(key, [...(cells.get(key) ?? []), p]);
   }

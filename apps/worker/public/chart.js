@@ -247,7 +247,7 @@ export class LineChart {
       const d = s.points
         .map((p, i) => `${i ? "L" : "M"}${sx(p.x).toFixed(1)} ${sy(p.y).toFixed(1)}`)
         .join("");
-      lines.append(svg("path", { d, class: `chart-line ${seriesClass(s.color)}` }));
+      lines.append(svg("path", { d, class: `chart-line ${seriesClass(s.color)}${s.thin ? " thin" : ""}` }));
       if (s.points.length === 1) {
         const p = s.points[0];
         lines.append(

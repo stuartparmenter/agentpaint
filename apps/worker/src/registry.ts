@@ -1,7 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 import { ARCHIVE_AFTER_MS, CANVAS_SIZE, createdIdleMs, LEASE_MS, MEDIUM, type SizeName } from "./config";
 import { digestsEqual, KEY_LENGTH, PAINTING_ID_LENGTH, randomId, sha256Hex } from "./ids";
-import { addMissingColumns } from "./schema";
 import { pick, STYLE_NAMES, STYLES, type StyleName } from "./styles";
 import type {
   CreateSettings,
@@ -140,23 +139,6 @@ export class Registry extends DurableObject<Env> {
       models TEXT NOT NULL DEFAULT '[]',
       creator TEXT
     )`);
-    addMissingColumns(this.sql, "paintings", {
-      kind: "TEXT NOT NULL DEFAULT 'pool'",
-      series_id: "TEXT",
-      size: "TEXT",
-      strokes_per_look: "INTEGER NOT NULL DEFAULT 1",
-      phases: "TEXT NOT NULL DEFAULT 'enforced'",
-      reference: "TEXT",
-      blank_score: "REAL",
-      mean_color_score: "REAL",
-      last_score: "REAL",
-      looks: "INTEGER NOT NULL DEFAULT 0",
-      mean_think_ms: "REAL",
-      tokens_in: "INTEGER NOT NULL DEFAULT 0",
-      tokens_out: "INTEGER NOT NULL DEFAULT 0",
-      models: "TEXT NOT NULL DEFAULT '[]'",
-      creator: "TEXT",
-    });
     this.sql.exec("CREATE INDEX IF NOT EXISTS paintings_status ON paintings (kind, status, last_stroke_at)");
     this.sql.exec("CREATE INDEX IF NOT EXISTS paintings_series ON paintings (series_id)");
     // Salt for hashing client addresses; it never leaves this object.
@@ -357,6 +339,22 @@ export class Registry extends DurableObject<Env> {
   }
 
   /** A series and its paintings, in creation order. */
+  /** Created paintings made against a reference (all of them, or one reference's), oldest first. */
+  async withReference(reference: string | null, limit: number): Promise<PaintingSummary[]> {
+    return this.sql
+      .exec<Row>(
+        `SELECT ${this.columns()} FROM paintings
+         WHERE kind = 'created' AND status != 'expired' AND reference IS NOT NULL AND (? IS NULL OR reference = ?)
+         ORDER BY created_at LIMIT ?`,
+        Date.now() - ARCHIVE_AFTER_MS,
+        reference,
+        reference,
+        limit,
+      )
+      .toArray()
+      .map(toSummary);
+  }
+
   async series(id: string): Promise<{ id: string; createdAt: number; paintings: PaintingSummary[] } | null> {
     const series = this.sql
       .exec<{ id: string; created_at: number }>("SELECT id, created_at FROM series WHERE id = ?", id)

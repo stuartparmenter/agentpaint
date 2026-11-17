@@ -4,6 +4,7 @@
 import { LineChart } from "./chart.js";
 import {
   attribution,
+  conditionKey,
   copyField,
   el,
   fmtDate,
@@ -14,18 +15,16 @@ import {
   idFromPath,
   loadJson,
   loadReferences,
-  loadSeriesKey,
   lookLabel,
   paintingKey,
   preload,
   snapshotUrl,
   statusBadge,
 } from "./common.js";
-import { createForm, prefillFrom, prefillQuery } from "./create-form.js";
+import { prefillQuery } from "./create-form.js";
 
 const id = idFromPath();
 const page = document.getElementById("page");
-const crumbs = document.getElementById("crumbs");
 
 const state = {
   painting: null,
@@ -101,16 +100,6 @@ async function refresh() {
 function build() {
   const p = state.painting;
   document.title = `${p.prompt ?? "Open subject"} · AgentPaint`;
-  if (p.seriesId) {
-    crumbs.append(
-      " / ",
-      el("a", { href: `/s/${encodeURIComponent(p.seriesId)}`, textContent: "Series" }),
-      " / ",
-      el("span", { textContent: `Painting ${p.id}` }),
-    );
-  } else {
-    crumbs.append(" / ", el("span", { textContent: `Painting ${p.id}` }));
-  }
 
   // Canvas and (when set) the reference, side by side.
   ui.img = el("img", { className: "canvas-img", alt: "", width: p.width, height: p.height });
@@ -137,6 +126,7 @@ function build() {
         if (!r) return;
         refImg.alt = `Reference: ${r.title}`;
         ui.refCaption.replaceChildren("Reference: ", attribution(r));
+        ui.testLink.textContent = `Part of the ${r.title} test →`;
       })
       .catch(() => {});
   } else {
@@ -181,15 +171,25 @@ function build() {
     ui.info,
   ]);
 
-  // Sidebar: settings, owner controls, duplicate.
+  // Sidebar: settings and owner controls. A reference painting links to its
+  // test; any other painting links to the home form, prefilled.
   ui.title = el("h2", { className: "painting-title" });
   ui.badges = el("div", { className: "badges" });
   ui.settings = el("dl", { className: "settings" });
-  const settingsPanel = el("section", { className: "panel" }, [ui.title, ui.badges, ui.settings]);
+  ui.testLink = p.reference
+    ? el("a", {
+        href: `/tests/${encodeURIComponent(p.reference)}?condition=${encodeURIComponent(conditionKey(p))}`,
+        textContent: "Part of a reference test →",
+      })
+    : el("a", { href: `/${prefillQuery(p)}`, textContent: "New painting with these settings" });
+  const settingsPanel = el("section", { className: "panel" }, [
+    ui.title,
+    ui.badges,
+    ui.settings,
+    el("p", { className: "small" }, [ui.testLink]),
+  ]);
   ui.owner = el("section", { className: "panel owner" });
   ui.owner.setAttribute("aria-label", "Your painting");
-  ui.duplicate = el("section", { className: "panel" });
-  ui.duplicate.setAttribute("aria-label", "Duplicate");
 
   // Score chart.
   ui.chartPanel = null;
@@ -248,11 +248,10 @@ function build() {
   ]);
 
   const mainCol = el("div", { className: "col main-col" }, [stage, ui.chartPanel, log]);
-  const sideCol = el("div", { className: "col side-col" }, [ui.owner, settingsPanel, ui.duplicate]);
+  const sideCol = el("div", { className: "col side-col" }, [ui.owner, settingsPanel]);
   page.replaceChildren(el("div", { className: "painting-layout" }, [mainCol, sideCol]));
 
   renderOwner();
-  renderDuplicate();
 }
 
 // ---------------------------------------------------------------- updates
@@ -289,7 +288,7 @@ function renderSettings() {
     ["Budget", `${p.strokeCount} of ${p.maxStrokes} strokes used`],
     ["Looks", fmtInt(p.looks)],
     ["Status", p.status],
-    ["Models seen", p.models.length ? p.models.join(", ") : "none reported"],
+    ["Models seen", p.models.length ? p.models.join(", ") : "not reported"],
     ["Mean think time", fmtSeconds(p.meanThinkMs)],
     ["Tokens in / out", `${fmtInt(p.tokensIn)} / ${fmtInt(p.tokensOut)}`],
   ];
@@ -298,14 +297,6 @@ function renderSettings() {
   if (p.finishedAt) rows.push(["Finished", fmtDate(p.finishedAt)]);
   const nodes = [];
   for (const [k, v] of rows) nodes.push(el("dt", { textContent: k }), el("dd", { textContent: v }));
-  if (p.seriesId) {
-    nodes.push(
-      el("dt", { textContent: "Series" }),
-      el("dd", {}, [
-        el("a", { href: `/s/${encodeURIComponent(p.seriesId)}`, textContent: "Compare the series" }),
-      ]),
-    );
-  }
   ui.settings.replaceChildren(...nodes);
 }
 
@@ -483,7 +474,7 @@ async function start() {
   }
 }
 
-// ---------------------------------------------------------------- owner and duplicate
+// ---------------------------------------------------------------- owner
 
 function renderOwner() {
   const p = state.painting;
@@ -540,61 +531,6 @@ function renderOwner() {
     children.push(el("p", { className: "small muted", textContent: `This painting is ${p.status}.` }));
   }
   ui.owner.replaceChildren(...children);
-}
-
-function renderDuplicate() {
-  const p = state.painting;
-  const stored = loadJson(paintingKey(p.id));
-  const key = p.seriesId ? (stored?.series_key ?? loadSeriesKey(p.seriesId)) : null;
-  const toggle = el("button", {
-    type: "button",
-    className: "button",
-    textContent: "Duplicate with different settings",
-  });
-  toggle.setAttribute("aria-expanded", "false");
-  const body = el("div", { className: "duplicate-body", hidden: true });
-  body.id = "duplicate-body";
-  toggle.setAttribute("aria-controls", body.id);
-  toggle.addEventListener("click", () => {
-    const open = body.hidden;
-    if (open && !body.childElementCount) {
-      if (key) {
-        body.append(
-          createForm({
-            prefill: prefillFrom(p),
-            series: { id: p.seriesId, key },
-            submitLabel: "Create in this series",
-          }),
-        );
-      } else {
-        body.append(
-          el("p", {
-            className: "notice",
-            textContent: p.seriesId
-              ? "Only the browser that created this series can add paintings to it. You can still start a new painting (in a new series) with these settings."
-              : "Pool paintings don't belong to a series. You can start a new painting with these settings.",
-          }),
-          createForm({ prefill: prefillFrom(p) }),
-        );
-      }
-    }
-    body.hidden = !open;
-    toggle.setAttribute("aria-expanded", String(open));
-    if (open) body.querySelector("select")?.focus();
-  });
-  const intro = key
-    ? "Start another painting in this series with these settings as a starting point."
-    : "Start another painting with these settings as a starting point.";
-  ui.duplicate.replaceChildren(
-    el("h2", { textContent: "Duplicate" }),
-    el("p", { className: "small muted" }, [
-      intro,
-      " ",
-      el("a", { href: `/${prefillQuery(p)}`, textContent: "Open in the gallery form" }),
-    ]),
-    el("div", { className: "button-row" }, [toggle]),
-    body,
-  );
 }
 
 init();

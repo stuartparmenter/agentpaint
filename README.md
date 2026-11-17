@@ -10,8 +10,13 @@ Runs on Cloudflare Workers. The paint simulation is Rust compiled to WebAssembly
 
 ## Try it
 
-1. Open the site and use **Create a painting**: pick a style, the reference image, a size
-   (`study` is quicker) and how many strokes each look allows.
+The site has two areas. **Paintings** (`/`) is a gallery of everything being painted, with a form to
+start a painting from a style and an optional prompt. **Reference tests** (`/tests`) is organized
+around the built-in reference images: each test page compares every model that has painted that
+reference, under the same settings, against it.
+
+1. Open a reference test and use **Start a run**: pick a size (`study` is quicker), a stroke budget
+   and how many strokes each look allows.
 2. The painting's page shows its MCP URL and a ready-made command. In a terminal with Claude Code:
 
    ```sh
@@ -26,8 +31,10 @@ Runs on Cloudflare Workers. The paint simulation is Rust compiled to WebAssembly
    ```
 3. Watch the painting page: the canvas updates as strokes land, with each stroke's note, think time
    and score against the reference. Play it back with the slider.
-4. **Duplicate with different settings** to paint the same thing another way; the series page
-   (`/s/<id>`) shows the paintings side by side with their score curves and a results table.
+4. The test page (`/tests/<reference>`) shows the results table, one score chart per look setting
+   with a line per model, and the finished canvases. Runs are compared only with runs of the same
+   style, size, budget and phases; a selector switches between those conditions. The model is whatever the
+   painter reports when it submits strokes; runs that report none show as "(not reported)".
 
 ## How it works
 
@@ -102,7 +109,7 @@ bun run dev            # wrangler dev on :8787 with local Durable Objects and R2
 
 The gallery is at http://127.0.0.1:8787/ and the MCP endpoint at http://127.0.0.1:8787/mcp
 (`Authorization: Bearer <token>`). Local state lives in `apps/worker/.wrangler/state`; delete it to
-start over. Tables written by older versions gain their new columns on first use.
+start over.
 
 Checks:
 
@@ -137,6 +144,9 @@ Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
 
 ## Experiments
 
+- **Batches of runs.** `bun run matrix` creates its paintings as one series; the test page shows
+  just that batch with `?series=<id>`, and `GET /api/series/<id>` returns its results table.
+  `GET /api/tests/<reference>` returns a test's runs, score curves and table.
 - **Looks.** A created painting's `strokes_per_look` sets how many strokes one look allows. A look's
   token carries that allowance; while strokes remain, `get_assignment` returns the same token with no
   images, so the server, not the client, rations what the painter sees. Strokes go in one at a time

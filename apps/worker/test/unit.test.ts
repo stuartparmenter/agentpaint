@@ -2,11 +2,12 @@ import { describe, expect, test } from "bun:test";
 import { authenticate, parseTokens } from "../src/auth";
 import { lookTtlMs } from "../src/config";
 import { makeToken, PAINTING_ID, parseToken, randomId } from "../src/ids";
-import { canvasSize, findReference } from "../src/references";
+import { canvasSize, findReference, REFERENCES } from "../src/references";
 import { seriesTable } from "../src/series";
 import { createInput, studyBudget } from "../src/settings";
 import { checkBounds, maxBrushSize, normalize, scaledMinBrush, strokeInput } from "../src/stroke";
 import { currentPhase, STYLES } from "../src/styles";
+import { conditionKey, conditions, downsample, selectRuns, testsIndex } from "../src/tests";
 import type { PaintingSummary } from "../src/types";
 
 const TOKEN_A = "a".repeat(40);
@@ -181,12 +182,88 @@ describe("created paintings", () => {
       p("d", [], 1, 0.7, 250, 10),
     ]);
     expect(table.map((c) => [c.models, c.strokes_per_look, c.paintings])).toEqual([
-      ["(none reported)", 1, 1],
+      ["(not reported)", 1, 1],
       ["m1", 1, 2],
       ["m1", 250, 1],
     ]);
     const m1 = table.find((c) => c.models === "m1" && c.strokes_per_look === 1);
     expect(m1?.final_score).toBeCloseTo(0.85);
     expect(m1?.mean_think_ms).toBe(2000);
+  });
+});
+
+describe("reference tests", () => {
+  const run = (over: Partial<PaintingSummary>): PaintingSummary =>
+    ({
+      id: "x",
+      kind: "created",
+      status: "active",
+      style: "landscape",
+      prompt: null,
+      medium: "acrylic",
+      width: 512,
+      height: 288,
+      strokeCount: 0,
+      maxStrokes: 250,
+      createdAt: 0,
+      lastStrokeAt: null,
+      finishedAt: null,
+      seriesId: "s1",
+      size: "study",
+      strokesPerLook: 1,
+      phases: "off",
+      reference: "krita-sunset",
+      blankScore: 0.75,
+      meanColorScore: 0.88,
+      lastScore: null,
+      looks: 0,
+      meanThinkMs: null,
+      tokensIn: 0,
+      tokensOut: 0,
+      models: [],
+      ...over,
+    }) satisfies PaintingSummary;
+
+  test("groups runs into comparable conditions, most runs first", () => {
+    const runs = [run({ id: "a" }), run({ id: "b", maxStrokes: 30 }), run({ id: "c" })];
+    expect(conditions(runs).map((c) => [c.maxStrokes, c.runs])).toEqual([
+      [250, 2],
+      [30, 1],
+    ]);
+  });
+
+  test("selects the requested condition, else the largest, within a series", () => {
+    const runs = [
+      run({ id: "a", seriesId: "s1" }),
+      run({ id: "b", seriesId: "s2", maxStrokes: 30 }),
+      run({ id: "c", seriesId: "s2", maxStrokes: 30 }),
+      run({ id: "d", seriesId: "s2" }),
+      run({ id: "e", seriesId: "s1", maxStrokes: 30 }),
+    ];
+    expect(selectRuns(runs, {}).paintings.map((p) => p.id)).toEqual(["b", "c", "e"]);
+    const key = conditionKey(runs[0] as PaintingSummary);
+    expect(selectRuns(runs, { condition: key }).paintings.map((p) => p.id)).toEqual(["a", "d"]);
+    expect(selectRuns(runs, { condition: key, series: "s2" }).paintings.map((p) => p.id)).toEqual(["d"]);
+    expect(selectRuns([], {}).condition).toBeNull();
+  });
+
+  test("the index lists every reference with its best finished score", () => {
+    const [entry] = testsIndex(REFERENCES, [
+      run({ id: "a", status: "done", lastScore: 0.8, models: ["m1"] }),
+      run({ id: "b", status: "active", lastScore: 0.9, models: ["m2"] }),
+    ]);
+    expect(entry?.runs).toBe(2);
+    expect(entry?.finished).toBe(1);
+    expect(entry?.bestScore).toBe(0.8);
+    expect(entry?.models).toEqual(["m1", "m2"]);
+  });
+
+  test("downsampling keeps the first and last points", () => {
+    const points = Array.from({ length: 1000 }, (_, i) => i);
+    const kept = downsample(points, 200);
+    expect(kept.length).toBe(200);
+    expect(kept[0]).toBe(0);
+    expect(kept.at(-1)).toBe(999);
+    expect(downsample([1, 2], 200)).toEqual([1, 2]);
   });
 });

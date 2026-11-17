@@ -599,14 +599,18 @@ const ownerLook = await scopedCall(keyHolder, "get_assignment");
 check("the agent key still works for its own client", !!ownerLook.json?.token, ownerLook.json);
 await keyHolder.close();
 
-const paintingPage = await fetch(`${base}/p/${p.id}`);
-check(
-  "serves the painting page",
-  paintingPage.status === 200 && (paintingPage.headers.get("content-type") ?? "").includes("text/html"),
-  page.status,
-);
-const seriesPage = await fetch(`${base}/s/${p.series_id}`);
-check("serves the series page", seriesPage.status === 200, seriesPage.status);
+const isHtml = (res: Response) =>
+  res.status === 200 && (res.headers.get("content-type") ?? "").includes("text/html");
+for (const [name, path] of [
+  ["the painting page", `/p/${p.id}`],
+  ["the tests index", "/tests"],
+  ["a reference test page", "/tests/krita-sunset"],
+  ["a test page for one batch of runs", `/tests/krita-sunset?series=${p.series_id}`],
+  ["the test page for an unknown reference (it reports the error)", "/tests/no-such-reference"],
+]) {
+  const res = await fetch(`${base}${path}`);
+  check(`serves ${name}`, isHtml(res), res.status);
+}
 
 console.log(failures ? `\n${failures} check(s) failed` : "\nall checks passed");
 process.exit(failures ? 1 : 0);
