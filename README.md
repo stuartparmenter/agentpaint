@@ -250,11 +250,14 @@ MCP URL.
 
 ## Third-party notices
 
-- The built-in reference image is
-  [Sunset - Landscape digital painting made in Krita](https://commons.wikimedia.org/wiki/File:Sunset_-_Landscape_digital_painting_made_in_krita.png)
-  by Raghukamath, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), resized
-  (`apps/worker/public/references/krita-sunset.png`, made with
-  `crates/renderer/examples/prepare_reference.rs`).
+- The built-in reference images, resized with `crates/renderer/examples/prepare_reference.rs` into
+  `apps/worker/public/references/`:
+  - [Sunset - Landscape digital painting made in Krita](https://commons.wikimedia.org/wiki/File:Sunset_-_Landscape_digital_painting_made_in_krita.png)
+    by Raghukamath, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
+  - [Composition II in Red, Blue, and Yellow](https://commons.wikimedia.org/wiki/File:Piet_Mondriaan,_1930_-_Mondrian_Composition_II_in_Red,_Blue,_and_Yellow.jpg)
+    by Piet Mondrian (1930), public domain.
+  - [Cappadocia Balloon Inflating](https://commons.wikimedia.org/wiki/File:Cappadocia_Balloon_Inflating_Wikimedia_Commons.JPG)
+    by Benh LIEU SONG, [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/).
 - hokusai (Apache-2.0) provides the brush engine.
 - JPEG encoding uses `jpeg-encoder`, which is based in part on the work of the Independent JPEG Group.
 - Color mixing uses [Mixbox](https://github.com/scrtwpns/mixbox) (CC BY-NC 4.0, non-commercial

@@ -29,6 +29,29 @@ export const REFERENCES: readonly ReferenceImage[] = [
     sourceUrl:
       "https://commons.wikimedia.org/wiki/File:Sunset_-_Landscape_digital_painting_made_in_krita.png",
   },
+  {
+    id: "mondrian-composition-ii",
+    title: "Composition II in Red, Blue, and Yellow (1930)",
+    file: "/references/mondrian-composition-ii.png",
+    width: 1024,
+    height: 1038,
+    artist: "Piet Mondrian",
+    license: "Public domain",
+    licenseUrl: "https://creativecommons.org/publicdomain/mark/1.0/",
+    sourceUrl:
+      "https://commons.wikimedia.org/wiki/File:Piet_Mondriaan,_1930_-_Mondrian_Composition_II_in_Red,_Blue,_and_Yellow.jpg",
+  },
+  {
+    id: "cappadocia-balloon",
+    title: "Inflating a hot-air balloon, Cappadocia",
+    file: "/references/cappadocia-balloon.png",
+    width: 1024,
+    height: 683,
+    artist: "Benh LIEU SONG",
+    license: "CC BY-SA 3.0",
+    licenseUrl: "https://creativecommons.org/licenses/by-sa/3.0/",
+    sourceUrl: "https://commons.wikimedia.org/wiki/File:Cappadocia_Balloon_Inflating_Wikimedia_Commons.JPG",
+  },
 ];
 
 export function findReference(id: string): ReferenceImage | undefined {
