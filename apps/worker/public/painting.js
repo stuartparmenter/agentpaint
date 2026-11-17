@@ -18,6 +18,7 @@ import {
   lookLabel,
   paintingKey,
   preload,
+  similarity,
   snapshotUrl,
   statusBadge,
 } from "./common.js";
@@ -197,7 +198,6 @@ function build() {
     ui.chart = new LineChart({
       label: "Score per stroke",
       xLabel: "stroke",
-      yFormat: (v) => v.toFixed(3),
       xTitle: (x) => (x === 0 ? "Blank canvas" : `Stroke ${x}`),
       extra: (x) => tooltipExtra(x),
       onPick: (x) => {
@@ -211,7 +211,7 @@ function build() {
       el("p", {
         className: "small muted",
         textContent:
-          "Similarity to the reference after each stroke (higher is closer). The dashed lines are what a blank canvas and a canvas painted one flat average color score. Click the chart to jump to a stroke.",
+          "Similarity to the reference after each stroke: 0 is a blank canvas, 1 is identical. The upper dashed line is what a canvas painted one flat average color scores. Click the chart to jump to a stroke.",
       }),
       ui.chart.root,
       ui.chartCaption,
@@ -292,7 +292,7 @@ function renderSettings() {
     ["Mean think time", fmtSeconds(p.meanThinkMs)],
     ["Tokens in / out", `${fmtInt(p.tokensIn)} / ${fmtInt(p.tokensOut)}`],
   ];
-  if (p.reference) rows.push(["Latest score", fmtScore(p.lastScore)]);
+  if (p.reference) rows.push(["Latest score", fmtScore(p.lastScore, p.blankScore)]);
   rows.push(["Created", fmtDate(p.createdAt)]);
   if (p.finishedAt) rows.push(["Finished", fmtDate(p.finishedAt)]);
   const nodes = [];
@@ -334,11 +334,17 @@ function renderChart() {
   if (!ui.chart) return;
   const p = state.painting;
   const points = [];
-  if (p.blankScore !== null) points.push({ x: 0, y: p.blankScore });
-  for (const s of state.strokes) if (s.score !== null) points.push({ x: s.version, y: s.score });
   const refs = [];
-  if (p.blankScore !== null) refs.push({ y: p.blankScore, label: "blank canvas" });
-  if (p.meanColorScore !== null) refs.push({ y: p.meanColorScore, label: "flat average color" });
+  if (p.blankScore !== null) {
+    points.push({ x: 0, y: 0 });
+    for (const s of state.strokes) {
+      if (s.score !== null) points.push({ x: s.version, y: similarity(s.score, p.blankScore) });
+    }
+    refs.push({ y: 0, label: "blank canvas" });
+    if (p.meanColorScore !== null) {
+      refs.push({ y: similarity(p.meanColorScore, p.blankScore), label: "flat average color" });
+    }
+  }
   const marks = showLookMarks();
   ui.chart.setData({
     series: [{ id: p.id, label: "score", color: 1, points }],
@@ -382,7 +388,7 @@ function renderLog() {
       el("td", { className: "num" }, [jump]),
       el("td", { className: "num", textContent: String(s.look) }),
       el("td", { className: "num", textContent: fmtSeconds(s.think_ms) }),
-      el("td", { className: "num", textContent: fmtScore(s.score) }),
+      el("td", { className: "num", textContent: fmtScore(s.score, state.painting.blankScore) }),
       el("td", { className: "note", textContent: s.note ?? "" }),
       el("td", { textContent: s.model ?? "" }),
       el("td", { textContent: s.effort ?? "" }),
@@ -417,12 +423,12 @@ function show(v) {
   const parts = [];
   if (state.viewing === 0) {
     parts.push(["Blank canvas", ""]);
-    if (p.blankScore !== null) parts.push(["Score", fmtScore(p.blankScore)]);
+    if (p.blankScore !== null) parts.push(["Score", fmtScore(p.blankScore, p.blankScore)]);
   } else if (s) {
     parts.push(["Stroke", `${s.version} of ${p.strokeCount}`]);
     parts.push(["Look", String(s.look)]);
     parts.push(["Think", fmtSeconds(s.think_ms)]);
-    if (s.score !== null) parts.push(["Score", fmtScore(s.score)]);
+    if (s.score !== null) parts.push(["Score", fmtScore(s.score, p.blankScore)]);
     if (s.model) parts.push(["Model", s.effort ? `${s.model} (${s.effort})` : s.model]);
   } else {
     parts.push(["Stroke", `${state.viewing} of ${p.strokeCount}`]);

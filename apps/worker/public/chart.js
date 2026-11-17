@@ -55,7 +55,7 @@ export class LineChart {
    * @param {number} [options.height] plot height in px
    */
   constructor(options) {
-    this.options = { height: 220, yFormat: (v) => v.toFixed(3), xTitle: (x) => `Stroke ${x}`, ...options };
+    this.options = { height: 220, yFormat: (v) => v.toFixed(2), xTitle: (x) => `Stroke ${x}`, ...options };
     this.data = { series: [], refs: [], boundaries: [], marker: null, xMax: 1 };
     this.hoverX = null;
     this.svg = svg("svg", { class: "chart-svg", tabindex: 0, role: "img" });
@@ -236,7 +236,7 @@ export class LineChart {
       for (const p of placed) if (Math.abs(p - ly) < 13) ly = p + 13;
       placed.push(ly);
       const text = svg("text", { x: right - 6, y: ly, "text-anchor": "end", class: "chart-ref-label" });
-      text.textContent = `${r.label} ${r.y.toFixed(3)}`;
+      text.textContent = `${r.label} ${this.options.yFormat(r.y)}`;
       refGroup.append(text);
     }
     this.svg.append(refGroup);

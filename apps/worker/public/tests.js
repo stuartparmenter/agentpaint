@@ -13,6 +13,7 @@ import {
   fmtSeconds,
   getJson,
   modelsLabel,
+  similarity,
   snapshotUrl,
 } from "./common.js";
 import { createForm } from "./create-form.js";
@@ -57,7 +58,9 @@ async function showIndex() {
         }),
         el("p", {
           textContent:
-            t.bestScore === null ? "No finished runs yet" : `Best finished score ${fmtScore(t.bestScore)}`,
+            t.best === null
+              ? "No finished runs yet"
+              : `Best finished score ${fmtScore(t.best.score, t.best.blankScore)}`,
         }),
         el("p", { className: "small muted" }, [attribution(r)]),
       ]),
@@ -170,8 +173,8 @@ function header(data, condition) {
   const { blank, meanColor } = data.anchors;
   const anchors =
     blank !== null && meanColor !== null
-      ? `Every stroke is scored by similarity to this image (higher is closer). For scale: a blank canvas scores ${fmtScore(blank)} and a canvas painted one flat average color scores ${fmtScore(meanColor)}.`
-      : "Every stroke is scored by similarity to this image (higher is closer).";
+      ? `Every stroke is scored by its similarity to this image: 0 is a blank canvas, 1 is identical. For scale, a canvas painted one flat average color scores ${fmtScore(meanColor, blank)}.`
+      : "Every stroke is scored by its similarity to this image: 0 is a blank canvas, 1 is identical.";
   const text = [
     el("h2", { textContent: r.title }),
     el("p", { className: "small muted", textContent: anchors }),
@@ -256,7 +259,7 @@ function renderLanes(data, paintings, colors, models, settings, max) {
           children.push(
             el("p", {
               className: "small",
-              textContent: `Mean ${fmtScore(summary.final_score)} over ${plural(runs.length, "run")}`,
+              textContent: `Mean ${fmtScore(summary.final_score, data.anchors.blank)} over ${plural(runs.length, "run")}`,
             }),
           );
         }
@@ -290,7 +293,7 @@ function runItem(p, model, spl, max) {
   return el("div", { className: "run" }, [
     el("a", { href }, [thumb]),
     el("div", { className: "run-score" }, [
-      el("strong", { textContent: fmtScore(p.lastScore) }),
+      el("strong", { textContent: fmtScore(p.lastScore, p.blankScore) }),
       p.status === "active" ? el("span", { className: "badge active", textContent: "painting" }) : null,
     ]),
     el("div", {
@@ -318,7 +321,7 @@ function renderTableView(data, models, max) {
         ...[
           fmtInt(r.paintings),
           fmtInt(r.finished),
-          fmtScore(r.final_score),
+          fmtScore(r.final_score, data.anchors.blank),
           fmtNum(r.strokes_used),
           fmtNum(r.looks),
           fmtSeconds(r.mean_think_ms),
@@ -352,12 +355,14 @@ function renderTableView(data, models, max) {
 function renderCharts(data, paintings, colors, models, settings, max) {
   const { blank, meanColor } = data.anchors;
   const refs = [];
-  if (blank !== null) refs.push({ y: blank, label: "blank canvas" });
-  if (meanColor !== null) refs.push({ y: meanColor, label: "flat average color" });
-  const curve = (p) => [
-    ...(blank !== null ? [{ x: 0, y: blank }] : []),
-    ...(data.curves[p.id] ?? []).map(([x, y]) => ({ x, y })),
-  ];
+  if (blank !== null) refs.push({ y: 0, label: "blank canvas" });
+  if (blank !== null && meanColor !== null) {
+    refs.push({ y: similarity(meanColor, blank), label: "flat average color" });
+  }
+  const curve = (p) =>
+    blank === null
+      ? []
+      : [{ x: 0, y: 0 }, ...(data.curves[p.id] ?? []).map(([x, y]) => ({ x, y: similarity(y, blank) }))];
   const ys = refs.map((r) => r.y);
   for (const p of paintings) for (const pt of curve(p)) ys.push(pt.y);
   const yDomain = [Math.min(...ys), Math.max(...ys)];
@@ -431,7 +436,10 @@ function startPanel(data, condition) {
     max_strokes: condition?.maxStrokes,
     phases: condition?.phases ?? "off",
   };
-  const models = [...new Set(data.paintings.flatMap((p) => p.models))].filter((m) => m !== "random").sort();
+  // Only id-shaped names go into a command someone will paste into a shell.
+  const models = [...new Set(data.paintings.flatMap((p) => p.models))]
+    .filter((m) => m !== "random" && /^[A-Za-z0-9._:/@+-]{1,100}$/.test(m))
+    .sort();
   const max = condition?.maxStrokes;
   const settings = [...new Set(data.paintings.map((p) => p.strokesPerLook))].sort((a, b) => a - b);
   const looks = settings.length ? settings.map((s) => (max && s >= max ? "all" : s)).join(",") : "1,20,all";

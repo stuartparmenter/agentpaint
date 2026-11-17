@@ -30,9 +30,22 @@ app.use(async (c, next) => {
  * Serve a public GET from the edge cache when possible, so anonymous gallery
  * traffic doesn't all land on the singleton Registry or on R2.
  */
-async function cached(c: AppContext, ttlSeconds: number, produce: () => Promise<Response>) {
+async function cached(
+  c: AppContext,
+  ttlSeconds: number,
+  produce: () => Promise<Response>,
+  params: string[] = [],
+) {
+  // Key on the path and the query parameters the endpoint reads, so other query
+  // strings can't be used to skip the cache.
+  const url = new URL(c.req.url);
+  const key = new URL(url.pathname, url.origin);
+  for (const name of params) {
+    const value = url.searchParams.get(name);
+    if (value !== null) key.searchParams.set(name, value);
+  }
   const cache = caches.default;
-  const hit = await cache.match(c.req.raw);
+  const hit = await cache.match(key);
   // Cached responses have immutable headers; hand back a mutable copy.
   if (hit) return new Response(hit.body, hit);
   const response = await produce();
@@ -42,7 +55,7 @@ async function cached(c: AppContext, ttlSeconds: number, produce: () => Promise<
       "Cache-Control",
       ttlSeconds >= 3600 ? `public, max-age=${ttlSeconds}, immutable` : `public, max-age=${ttlSeconds}`,
     );
-    c.executionCtx.waitUntil(cache.put(c.req.raw, copy.clone()));
+    c.executionCtx.waitUntil(cache.put(key, copy.clone()));
     return copy;
   }
   return response;
@@ -221,28 +234,33 @@ app.get("/api/tests/:reference", (c) => {
   if (!reference) return c.notFound();
   const series = c.req.query("series") ?? null;
   if (series !== null && !SERIES_ID.test(series)) return c.json({ error: "bad series id" }, 400);
-  return cached(c, 10, async () => {
-    const runs = await c.env.REGISTRY.getByName("registry").withReference(reference.id, MAX_TEST_RUNS);
-    const selected = selectRuns(runs, { condition: c.req.query("condition"), series });
-    const curves = Object.fromEntries(
-      await Promise.all(
-        selected.paintings.map(async (p) => {
-          const curve = await c.env.PAINTING.getByName(p.id).scoreCurve();
-          return [p.id, downsample(curve as [number, number][], CURVE_POINTS)] as const;
-        }),
-      ),
-    );
-    const first = selected.paintings[0];
-    const detail: TestDetail = {
-      reference,
-      ...selected,
-      series,
-      anchors: { blank: first?.blankScore ?? null, meanColor: first?.meanColorScore ?? null },
-      curves,
-      table: seriesTable(selected.paintings),
-    };
-    return c.json(detail);
-  });
+  return cached(
+    c,
+    10,
+    async () => {
+      const runs = await c.env.REGISTRY.getByName("registry").withReference(reference.id, MAX_TEST_RUNS);
+      const selected = selectRuns(runs, { condition: c.req.query("condition"), series });
+      const curves = Object.fromEntries(
+        await Promise.all(
+          selected.paintings.map(async (p) => {
+            const curve = await c.env.PAINTING.getByName(p.id).scoreCurve();
+            return [p.id, downsample(curve as [number, number][], CURVE_POINTS)] as const;
+          }),
+        ),
+      );
+      const first = selected.paintings[0];
+      const detail: TestDetail = {
+        reference,
+        ...selected,
+        series,
+        anchors: { blank: first?.blankScore ?? null, meanColor: first?.meanColorScore ?? null },
+        curves,
+        table: seriesTable(selected.paintings),
+      };
+      return c.json(detail);
+    },
+    ["condition", "series"],
+  );
 });
 
 // Pages (static HTML that reads the API).

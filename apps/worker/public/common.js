@@ -73,8 +73,19 @@ export function fmtSeconds(ms) {
   return `${Math.round(s)} s`;
 }
 
-export function fmtScore(score) {
-  return score === null || score === undefined || !Number.isFinite(score) ? "–" : score.toFixed(3);
+/**
+ * A stored score on the scale the pages show: 0 is a blank canvas, 1 is identical
+ * to the reference. The API keeps the raw score (1 - mean OKLab distance).
+ */
+export function similarity(raw, blank) {
+  if (raw === null || raw === undefined || !Number.isFinite(raw)) return null;
+  if (blank === null || blank === undefined) return null;
+  return (raw - blank) / (1 - blank);
+}
+
+export function fmtScore(raw, blank) {
+  const s = similarity(raw, blank);
+  return s === null ? "–" : s.toFixed(2);
 }
 
 export function fmtInt(n) {

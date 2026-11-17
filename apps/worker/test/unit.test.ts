@@ -254,7 +254,7 @@ describe("reference tests", () => {
     ]);
     expect(entry?.runs).toBe(2);
     expect(entry?.finished).toBe(1);
-    expect(entry?.bestScore).toBe(0.8);
+    expect(entry?.best).toEqual({ score: 0.8, blankScore: 0.75 });
     expect(entry?.models).toEqual(["m1", "m2"]);
   });
 

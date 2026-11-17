@@ -23,7 +23,8 @@ export interface TestSummary {
   runs: number;
   finished: number;
   models: string[];
-  bestScore: number | null;
+  /** The finished run closest to the reference, with its blank-canvas score for scale. */
+  best: { score: number; blankScore: number } | null;
   lastRunAt: number | null;
 }
 
@@ -76,13 +77,19 @@ export function testsIndex(
 ): TestSummary[] {
   return references.map((reference) => {
     const runs = paintings.filter((p) => p.reference === reference.id);
-    const scores = runs.flatMap((p) => (isFinished(p) && p.lastScore !== null ? [p.lastScore] : []));
+    // Canvas sizes differ in blank score, so runs are compared by how far they rose above it.
+    const scored = runs.flatMap((p) =>
+      isFinished(p) && p.lastScore !== null && p.blankScore !== null
+        ? [{ score: p.lastScore, blankScore: p.blankScore }]
+        : [],
+    );
+    const rise = (r: { score: number; blankScore: number }) => (r.score - r.blankScore) / (1 - r.blankScore);
     return {
       reference,
       runs: runs.length,
       finished: runs.filter(isFinished).length,
       models: [...new Set(runs.flatMap((p) => p.models))].sort(),
-      bestScore: scores.length ? Math.max(...scores) : null,
+      best: scored.reduce<(typeof scored)[number] | null>((a, r) => (a && rise(a) >= rise(r) ? a : r), null),
       lastRunAt: runs.length ? Math.max(...runs.map((p) => p.lastStrokeAt ?? p.createdAt)) : null,
     };
   });

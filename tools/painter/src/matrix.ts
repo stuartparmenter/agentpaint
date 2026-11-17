@@ -196,18 +196,23 @@ await Promise.all(
   }),
 );
 
-// Results come from the server's record; a query string skips the edge cache.
-const result = (await (await fetch(`${origin}/api/series/${series.id}?t=${Date.now()}`)).json()) as {
+// Results come from the server's record; wait out the endpoint's 4-second edge cache.
+await Bun.sleep(5000);
+const result = (await (await fetch(`${origin}/api/series/${series.id}`)).json()) as {
   paintings: { blankScore: number | null; meanColorScore: number | null }[];
   table: Record<string, number | string | null>[];
 };
 const first = result.paintings[0];
 const fmt = (v: unknown, digits = 3) => (typeof v === "number" ? v.toFixed(digits) : "—");
+// Scores on the scale the pages show: 0 is a blank canvas, 1 is identical to the reference.
+const blank = first?.blankScore ?? null;
+const similarity = (raw: unknown) =>
+  typeof raw === "number" && blank !== null ? fmt((raw - blank) / (1 - blank), 2) : "—";
 const rows = result.table.map((c) => [
   String(c.models),
   String(c.strokes_per_look),
   `${c.finished}/${c.paintings}`,
-  fmt(c.final_score),
+  similarity(c.final_score),
   fmt(c.strokes_used, 1),
   fmt(c.looks, 1),
   typeof c.mean_think_ms === "number" ? `${(c.mean_think_ms / 1000).toFixed(1)}s` : "—",
@@ -230,9 +235,9 @@ const line = (r: string[]) => r.map((v, i) => v.padEnd(widths[i] ?? 0)).join("  
 console.log("");
 console.log(line(header));
 for (const r of rows) console.log(line(r));
-if (first?.blankScore != null) {
+if (blank !== null) {
   console.log(
-    `\nAnchors: blank canvas ${fmt(first.blankScore)}, flat average color ${fmt(first.meanColorScore)}`,
+    `\nScores: 0 is a blank canvas, 1 is identical; one flat average color scores ${similarity(first?.meanColorScore)}.`,
   );
 }
 const sent = cells.find((c) => c.summary?.sent)?.summary?.sent;

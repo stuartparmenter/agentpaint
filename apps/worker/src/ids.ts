@@ -28,6 +28,9 @@ export function parseToken(token: string): { paintingId: string; secret: string 
 
 /** Per-painting agent and owner keys, and series keys. */
 export const KEY_LENGTH = 32;
+/** Self-reported model ids: id-shaped, so they are safe to show in a shell command. */
+export const MODEL_ID = /^[A-Za-z0-9._:/@+-]{1,100}$/;
+
 export const KEY = /^[0-9A-Za-z]{32}$/;
 export const SERIES_ID = /^[0-9A-Za-z]{12}$/;
 

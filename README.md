@@ -159,8 +159,9 @@ Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
 - **Score.** After every stroke the canvas (a flat composite: no weave, no lighting) and the
   reference are averaged down to 64x64 in linear light, converted to OKLab, and compared cell by
   cell: score = 1 − mean OKLab distance, clamped to 0..1. It is stored with the stroke and never
-  sent to the painter. Two anchors give it a scale: the score of a blank canvas and of a canvas
-  filled with the reference's average color.
+  sent to the painter. The API returns this raw score. The pages and `matrix` show it rescaled
+  so that 0 is a blank canvas and 1 is identical: `(score − blank) / (1 − blank)`. For scale, a
+  canvas filled with the reference's average color is shown too (0.54 on the sunset study).
 - **Stroke log.** `GET /api/paintings/<id>/strokes`: per stroke, the look it followed, think time
   (server-measured: submit time minus the time of that look), score, the painter's note, and
   self-reported model, effort, token counts and prompt hash. The bundled painter reports the model
