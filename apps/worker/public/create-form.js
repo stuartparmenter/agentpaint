@@ -4,7 +4,6 @@
 
 import { el, getJson, paintingKey, saveJson } from "./common.js";
 
-const PHASES = ["off", "guidance", "enforced"];
 const ASSIGNMENT_HELP =
   "Each assignment shows the agent the canvas and allows this many strokes; it sees the result at the next assignment. 1 = it sees the canvas before every stroke; equal to max strokes = it sees the canvas once, at the start.";
 
@@ -52,7 +51,7 @@ function numberInput(name, value, placeholder) {
  * Builds the form.
  * @param {object} [options]
  * @param {object} [options.prefill] {style, prompt, max_strokes, strokes_per_assignment}
- * @param {object} [options.test] {reference, style, size, max_strokes, phases}: test mode
+ * @param {object} [options.test] {reference, style, size, max_strokes}: test mode
  */
 export function createForm({ prefill = {}, test = null } = {}) {
   // The style options arrive with the styles; the first is the default.
@@ -65,7 +64,6 @@ export function createForm({ prefill = {}, test = null } = {}) {
     value: prefill.prompt ?? "",
   });
   const size = select("size", ["study", "full"], test?.size);
-  const phases = select("phases", PHASES, test?.phases);
   const maxStrokes = numberInput("max_strokes", test?.max_strokes ?? prefill.max_strokes, "Style default");
   const perAssignment = numberInput("strokes_per_assignment", prefill.strokes_per_assignment ?? 1);
   perAssignment.required = true;
@@ -97,7 +95,7 @@ export function createForm({ prefill = {}, test = null } = {}) {
           el("summary", { textContent: "Change settings" }),
           el("div", { className: "more-body" }, [
             field("Style", style),
-            el("div", { className: "field-pair" }, [field("Size", size), field("Phases", phases)]),
+            field("Size", size),
             field("Max strokes", maxStrokes),
           ]),
         ]),
@@ -138,7 +136,7 @@ export function createForm({ prefill = {}, test = null } = {}) {
     e.preventDefault();
     error.hidden = true;
     const body = { style: style.value };
-    if (test) Object.assign(body, { reference: test.reference, size: size.value, phases: phases.value });
+    if (test) Object.assign(body, { reference: test.reference, size: size.value });
     else body.prompt = prompt.value.trim() || null;
     if (maxStrokes.value) body.max_strokes = Number(maxStrokes.value);
     const spl = Number(perAssignment.value);

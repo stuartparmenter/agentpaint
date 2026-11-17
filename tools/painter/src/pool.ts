@@ -76,7 +76,7 @@ export async function runPool(anthropic: Anthropic | null, opts: PoolOptions) {
     const result = await callTool(mcp, "submit_stroke", { token: meta.token, stroke_data }, log);
     const parsed = firstJson(result.content as McpContent[]);
     console.log(
-      `${tag} ${meta.style} ${meta.stroke_count + 1}/${meta.max_strokes} (${meta.phase}): ${parsed.applied ? "applied" : `rejected: ${parsed.reason}`}`,
+      `${tag} ${meta.style} ${meta.stroke_count + 1}/${meta.max_strokes}: ${parsed.applied ? "applied" : `rejected: ${parsed.reason}`}`,
     );
     return parsed.applied ? "applied" : "failed";
   }

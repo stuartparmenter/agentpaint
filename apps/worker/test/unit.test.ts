@@ -5,8 +5,7 @@ import { makeToken, PAINTING_ID, parseToken, randomId } from "../src/ids";
 import { canvasSize, findReference, REFERENCES } from "../src/references";
 import { seriesTable } from "../src/series";
 import { createInput, studyBudget } from "../src/settings";
-import { checkBounds, maxBrushSize, normalize, scaledMinBrush, strokeInput } from "../src/stroke";
-import { currentPhase, STYLES } from "../src/styles";
+import { checkBounds, maxBrushSize, normalize, strokeInput } from "../src/stroke";
 import { conditionKey, conditions, downsample, selectRuns, testsIndex } from "../src/tests";
 import type { PaintingSummary } from "../src/types";
 
@@ -63,25 +62,6 @@ describe("ids", () => {
   });
 });
 
-describe("styles", () => {
-  test("phases advance with progress and the last phase holds", () => {
-    const style = STYLES.figurative;
-    expect(currentPhase(style, 0).name).toBe("foundation");
-    expect(currentPhase(style, 79).name).toBe("foundation");
-    expect(currentPhase(style, 80).name).toBe("structure");
-    expect(currentPhase(style, 799).name).toBe("detail");
-    expect(currentPhase(style, 5000).name).toBe("detail");
-  });
-
-  test("every style starts with a large minimum brush and ends allowing detail", () => {
-    for (const style of Object.values(STYLES)) {
-      expect(currentPhase(style, 0).minBrushSize).toBeGreaterThanOrEqual(40);
-      expect(style.phases.at(-1)?.minBrushSize).toBe(1);
-      expect(style.phases.at(-1)?.until).toBe(1);
-    }
-  });
-});
-
 describe("stroke", () => {
   const stroke = {
     points: [
@@ -120,7 +100,7 @@ describe("stroke", () => {
 describe("created paintings", () => {
   test("settings default sensibly and reject bad values", () => {
     const parsed = createInput.parse({ style: "landscape" });
-    expect(parsed).toMatchObject({ size: "full", strokes_per_assignment: 1, phases: "off" });
+    expect(parsed).toMatchObject({ size: "full", strokes_per_assignment: 1 });
     expect(createInput.safeParse({ style: "watercolor" }).success).toBe(false);
     expect(createInput.safeParse({ style: "landscape", strokes_per_assignment: 0 }).success).toBe(false);
     expect(createInput.safeParse({ style: "landscape", max_strokes: 5000 }).success).toBe(false);
@@ -136,21 +116,14 @@ describe("created paintings", () => {
     expect(canvasSize(512, undefined)).toEqual({ width: 512, height: 512 });
   });
 
-  test("brush limits scale with the canvas", () => {
+  test("the maximum brush size scales with the canvas", () => {
     expect(maxBrushSize(1024)).toBe(200);
     expect(maxBrushSize(512)).toBe(100);
-    expect(scaledMinBrush(120, 512)).toBe(60);
-    expect(scaledMinBrush(1, 512)).toBe(1);
   });
 
   test("an assignment's token lives longer for larger allowances, up to two hours", () => {
     expect(assignmentTtlMs(1)).toBe(10 * 60_000 + 30_000);
     expect(assignmentTtlMs(250)).toBe(2 * 60 * 60_000);
-  });
-
-  test("phases follow the painting's own budget", () => {
-    expect(currentPhase(STYLES.landscape, 30, 250).name).toBe("structure");
-    expect(currentPhase(STYLES.landscape, 30).name).toBe("foundation");
   });
 
   test("the series table groups by models and strokes per assignment and averages repeats", () => {
@@ -167,7 +140,6 @@ describe("created paintings", () => {
       finishedAt: 0,
       seriesId: "s",
       size: "study",
-      phases: "off",
       reference: "krita-sunset",
       blankScore: 0.75,
       meanColorScore: 0.88,
@@ -220,7 +192,6 @@ describe("reference tests", () => {
       seriesId: "s1",
       size: "study",
       strokesPerAssignment: 1,
-      phases: "off",
       reference: "krita-sunset",
       blankScore: 0.75,
       meanColorScore: 0.88,

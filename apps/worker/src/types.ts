@@ -6,8 +6,6 @@ import type { StyleName } from "./styles";
 export type PaintingStatus = "active" | "done" | "archived" | "expired";
 /** `pool` paintings are made by the pooled endpoint's leases; `created` ones by POST /api/paintings. */
 export type PaintingKind = "pool" | "created";
-export const PHASE_MODES = ["off", "guidance", "enforced"] as const;
-export type PhaseMode = (typeof PHASE_MODES)[number];
 
 export interface PaintingSummary {
   id: string;
@@ -26,7 +24,6 @@ export interface PaintingSummary {
   seriesId: string | null;
   size: SizeName | null;
   strokesPerAssignment: number;
-  phases: PhaseMode;
   reference: string | null;
   blankScore: number | null;
   meanColorScore: number | null;
@@ -49,7 +46,6 @@ export interface CreateSettings {
   height: number;
   maxStrokes: number;
   strokesPerAssignment: number;
-  phases: PhaseMode;
   reference: string | null;
   blankScore: number | null;
   meanColorScore: number | null;

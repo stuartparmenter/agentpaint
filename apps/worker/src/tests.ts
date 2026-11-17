@@ -14,7 +14,6 @@ export interface Condition {
   width: number;
   height: number;
   maxStrokes: number;
-  phases: string;
   runs: number;
 }
 
@@ -45,7 +44,7 @@ export interface TestDetail {
 
 /** Key of a created painting's condition (created paintings always have a size). */
 export function conditionKey(p: PaintingSummary): string {
-  return `${p.style}-${p.size}-${p.width}x${p.height}-${p.maxStrokes}-${p.phases}`;
+  return `${p.style}-${p.size}-${p.width}x${p.height}-${p.maxStrokes}`;
 }
 
 /** Conditions present among `paintings`, most runs first. */
@@ -63,7 +62,6 @@ export function conditions(paintings: PaintingSummary[]): Condition[] {
         width: p.width,
         height: p.height,
         maxStrokes: p.maxStrokes,
-        phases: p.phases,
         runs: 1,
       });
   }

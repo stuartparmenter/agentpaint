@@ -2,14 +2,7 @@ import { DurableObject } from "cloudflare:workers";
 import { ARCHIVE_AFTER_MS, CANVAS_SIZE, createdIdleMs, LEASE_MS, type SizeName } from "./config";
 import { constantTimeEqual, KEY_LENGTH, PAINTING_ID_LENGTH, randomId, sha256Hex } from "./ids";
 import { pick, STYLE_NAMES, STYLES, type StyleName } from "./styles";
-import type {
-  CreateSettings,
-  PaintingKind,
-  PaintingStats,
-  PaintingStatus,
-  PaintingSummary,
-  PhaseMode,
-} from "./types";
+import type { CreateSettings, PaintingKind, PaintingStats, PaintingStatus, PaintingSummary } from "./types";
 
 interface Row extends Record<string, SqlStorageValue> {
   id: string;
@@ -28,7 +21,6 @@ interface Row extends Record<string, SqlStorageValue> {
   series_id: string | null;
   size: string | null;
   strokes_per_assignment: number;
-  phases: string;
   reference: string | null;
   blank_score: number | null;
   mean_color_score: number | null;
@@ -57,7 +49,6 @@ function toSummary(r: Row): PaintingSummary {
     seriesId: r.series_id,
     size: r.size as SizeName | null,
     strokesPerAssignment: r.strokes_per_assignment,
-    phases: r.phases as PhaseMode,
     reference: r.reference,
     blankScore: r.blank_score,
     meanColorScore: r.mean_color_score,
@@ -115,7 +106,6 @@ export class Registry extends DurableObject<Env> {
       series_id TEXT,
       size TEXT,
       strokes_per_assignment INTEGER NOT NULL,
-      phases TEXT NOT NULL,
       reference TEXT,
       blank_score REAL,
       mean_color_score REAL,
@@ -178,7 +168,7 @@ export class Registry extends DurableObject<Env> {
     const id = randomId(PAINTING_ID_LENGTH);
     this.sql.exec(
       `INSERT INTO paintings (id, kind, status, style, prompt, width, height, max_strokes, created_at,
-        lease_until, strokes_per_assignment, phases) VALUES (?, 'pool', 'active', ?, ?, ?, ?, ?, ?, ?, 1, 'enforced')`,
+        lease_until, strokes_per_assignment) VALUES (?, 'pool', 'active', ?, ?, ?, ?, ?, ?, ?, 1)`,
       id,
       style.name,
       pick(style.prompts),
@@ -255,8 +245,8 @@ export class Registry extends DurableObject<Env> {
     const id = randomId(PAINTING_ID_LENGTH);
     this.sql.exec(
       `INSERT INTO paintings (id, kind, status, style, prompt, width, height, max_strokes, created_at,
-        series_id, size, strokes_per_assignment, phases, reference, blank_score, mean_color_score, creator)
-       VALUES (?, 'created', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        series_id, size, strokes_per_assignment, reference, blank_score, mean_color_score, creator)
+       VALUES (?, 'created', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       settings.style,
       settings.prompt,
@@ -267,7 +257,6 @@ export class Registry extends DurableObject<Env> {
       seriesId,
       settings.size,
       settings.strokesPerAssignment,
-      settings.phases,
       settings.reference,
       settings.blankScore,
       settings.meanColorScore,
@@ -373,7 +362,7 @@ export class Registry extends DurableObject<Env> {
     return `id, kind,
       CASE WHEN kind = 'pool' AND status = 'done' AND finished_at <= ? THEN 'archived' ELSE status END AS status,
       style, prompt, width, height, stroke_count, max_strokes, created_at, last_stroke_at, finished_at,
-      lease_until, series_id, size, strokes_per_assignment, phases, reference, blank_score, mean_color_score, last_score,
+      lease_until, series_id, size, strokes_per_assignment, reference, blank_score, mean_color_score, last_score,
       assignments, mean_think_ms, tokens_in, tokens_out, models`;
   }
 }

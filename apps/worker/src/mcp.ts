@@ -57,7 +57,6 @@ function poolResult(r: SubmitResult) {
     applied: false,
     reason: r.reason,
     ...(r.detail ? { detail: r.detail } : {}),
-    ...(r.min_brush_size ? { min_brush_size: r.min_brush_size } : {}),
   };
 }
 
@@ -78,7 +77,7 @@ export function buildServer(env: Env, agent: Agent): McpServer {
     {
       description:
         "Get a painting assignment: a snapshot of a canvas (JPEG) plus metadata, including the subject prompt " +
-        "(null means it's up to the painters), the current phase, its guidance and the minimum brush size. " +
+        "(null means it's up to the painters) and the maximum brush size. " +
         "The canvas is reserved for you for a few minutes. Then call submit_stroke with the token.",
       inputSchema: z.object({}),
       annotations: ANNOTATIONS,
@@ -123,7 +122,7 @@ export function buildServer(env: Env, agent: Agent): McpServer {
     {
       description:
         "Submit one brush stroke to the painting from your assignment. Coordinates and brush size are in canvas " +
-        "pixels. Each token paints one stroke. A rejected stroke (invalid_stroke, brush_too_small) leaves the " +
+        "pixels. Each token paints one stroke. A rejected stroke (invalid_stroke) leaves the " +
         "token usable, so fix it and resubmit (resubmit as-is on temporary_failure); stale_assignment or " +
         "token_expired mean call get_assignment again.",
       inputSchema: z.object({

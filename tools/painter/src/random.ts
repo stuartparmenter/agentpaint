@@ -3,7 +3,6 @@
 export interface AssignmentMeta {
   canvas_width: number;
   canvas_height: number;
-  min_brush_size?: number;
   max_brush_size: number;
 }
 
@@ -11,7 +10,7 @@ const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 
 export function randomStroke(meta: AssignmentMeta) {
   const maxSize = meta.max_brush_size;
-  const minSize = Math.min(maxSize, meta.min_brush_size ?? Math.max(2, maxSize / 20));
+  const minSize = Math.min(maxSize, Math.max(2, maxSize / 20));
   const size = rand(minSize, Math.min(maxSize, Math.max(minSize * 1.6, minSize + 10)));
   let x = rand(0, meta.canvas_width);
   let y = rand(0, meta.canvas_height);

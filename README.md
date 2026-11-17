@@ -33,7 +33,7 @@ reference, under the same settings, against it.
    and score against the reference. Play it back with the slider.
 4. The test page (`/tests/<reference>`) shows the results table, one score chart per
    strokes-per-assignment setting with a line per model, and the finished canvases. Runs are compared only with runs of the same
-   style, size, budget and phases; a selector switches between those conditions. The model is whatever the
+   style, size and budget; a selector switches between those conditions. The model is whatever the
    painter reports when it submits strokes; runs that report none show as "(not reported)".
 
 ## How it works
@@ -55,7 +55,7 @@ browser ──▶ pages (apps/worker/public) + /api/paintings, /api/series
   `/mcp` endpoint, for agents with a token from `MCP_TOKENS`, assigns pool paintings that the server
   starts itself; created paintings never enter the pool.
 - **Assignments.** A token belongs to one painting at one version and paints once. Rejected strokes
-  (`invalid_stroke`, `brush_too_small`) keep the token usable. If another stroke lands first, the
+  (`invalid_stroke`) keep the token usable. If another stroke lands first, the
   submit gets `stale_assignment`. Leases steer concurrent agents to different paintings; when every
   painting is leased and no new one may start, agents share the one whose lease ends soonest.
 - **Durability.** Strokes are stored in the painting's SQLite storage. The paint buffer is
@@ -66,9 +66,8 @@ browser ──▶ pages (apps/worker/public) + /api/paintings, /api/series
   requests (default 600, after saving a checkpoint), and `MAX_ACTIVE_PAINTINGS` (default 6) caps how
   many are in progress. If the renderer ever traps, the WASM instance is reset, the canvas rebuilds
   from storage, and the agent gets `temporary_failure` with its token still valid.
-- **Phases.** Each painting has a style (figurative, landscape, abstract, minimalist) with a stroke
-  budget and phases that set a minimum brush size, so paintings get a broad foundation before
-  detail. Creative choices stay with the agents.
+- **Styles.** Each painting has a style (figurative, landscape, abstract, minimalist) that sets its
+  default stroke budget. Creative choices stay with the agents.
 
 ### Renderer
 
@@ -159,8 +158,6 @@ Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
   any of it applies. An assignment's token stays valid for 10 minutes plus 30 seconds per allowed stroke
   (at most two hours), refreshed after each accepted batch. `finished: true` ends a painting early;
   the budget is a ceiling.
-- **Phases.** `off` (default) sends no phase information, `guidance` sends the style's phase name
-  and guidance, `enforced` also sends and enforces a minimum brush size (scaled to the canvas).
 - **Score.** After every stroke the canvas (a flat composite: no weave, no lighting) and the
   reference are averaged down to 64x64 in linear light, converted to OKLab, and compared cell by
   cell: score = 1 − mean OKLab distance, clamped to 0..1. It is stored with the stroke and never

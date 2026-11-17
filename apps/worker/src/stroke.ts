@@ -22,11 +22,7 @@ export const strokeInput = z.object({
     .max(MAX_POINTS)
     .describe("Control points along the stroke (2-50); the path is smoothed through them"),
   brush: z.object({
-    size: z
-      .number()
-      .min(1)
-      .max(MAX_BRUSH_SIZE)
-      .describe("Brush diameter in pixels; must be at least the phase's min_brush_size"),
+    size: z.number().min(1).max(MAX_BRUSH_SIZE).describe("Brush diameter in pixels, up to max_brush_size"),
     hardness: unit.describe("Edge hardness: 0 = soft and feathered, 1 = crisp"),
     opacity: unit.describe("Maximum opacity this stroke can reach"),
     flow: unit.describe("Paint deposited per pass; builds up toward opacity"),
@@ -56,11 +52,6 @@ export type BatchStrokeInput = z.infer<typeof batchStrokeInput>;
 /** Largest brush diameter on a canvas this wide (MAX_BRUSH_SIZE at 1024 px, scaled). */
 export function maxBrushSize(width: number): number {
   return Math.round((MAX_BRUSH_SIZE * width) / 1024);
-}
-
-/** A phase's minimum brush diameter (defined at 1024 px) scaled to this canvas. */
-export function scaledMinBrush(minBrushSize: number, width: number): number {
-  return Math.max(1, Math.round((minBrushSize * width) / 1024));
 }
 
 /** Renderer stroke format (see crates/renderer/src/stroke.rs). */

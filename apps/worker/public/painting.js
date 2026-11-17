@@ -231,7 +231,6 @@ function renderSettings() {
     ["Prompt", p.prompt ?? "Open subject (none given)"],
     ["Size", `${p.size ?? "pool"} · ${p.width}×${p.height}`],
     ["Strokes per assignment", assignmentTitle("span", p.strokesPerAssignment, p.maxStrokes)],
-    ["Phases", p.phases],
     ["Budget", `${p.strokeCount} of ${p.maxStrokes} strokes used`],
     ["Assignments", fmtInt(p.assignments)],
     ["Status", p.status],

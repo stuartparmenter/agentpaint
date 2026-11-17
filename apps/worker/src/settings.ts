@@ -2,7 +2,6 @@ import * as z from "zod/v4";
 import { MAX_STROKES_LIMIT, SIZES, type SizeName } from "./config";
 import { KEY, SERIES_ID } from "./ids";
 import { STYLE_NAMES, type StyleName } from "./styles";
-import { PHASE_MODES } from "./types";
 
 // Settings accepted by POST /api/paintings.
 
@@ -13,7 +12,6 @@ export const createInput = z.object({
   size: z.enum(Object.keys(SIZES) as [SizeName, ...SizeName[]]).default("full"),
   max_strokes: z.number().int().min(1).max(MAX_STROKES_LIMIT).optional(),
   strokes_per_assignment: z.number().int().min(1).max(MAX_STROKES_LIMIT).default(1),
-  phases: z.enum(PHASE_MODES).default("off"),
   series: z.string().regex(SERIES_ID).optional(),
   series_key: z.string().regex(KEY).optional(),
 });

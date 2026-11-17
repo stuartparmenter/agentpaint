@@ -115,11 +115,6 @@ app.get("/api/styles", (c) =>
     STYLE_NAMES.map((name) => ({
       name,
       max_strokes: { full: STYLES[name].maxStrokes, study: studyBudget(STYLES[name].maxStrokes) },
-      phases: STYLES[name].phases.map((p) => ({
-        name: p.name,
-        until: p.until,
-        min_brush_size: p.minBrushSize,
-      })),
     })),
   ),
 );

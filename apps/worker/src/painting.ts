@@ -14,8 +14,7 @@ import {
 } from "./config";
 import { constantTimeEqual, makeToken, randomId, sha256Hex, TOKEN_SECRET_LENGTH } from "./ids";
 import { Canvas, resetRenderer, validateStroke } from "./renderer";
-import { type BatchStrokeInput, checkBounds, maxBrushSize, normalize, scaledMinBrush } from "./stroke";
-import { currentPhase, isStyleName, STYLES, type Style } from "./styles";
+import { type BatchStrokeInput, checkBounds, maxBrushSize, normalize } from "./stroke";
 import type { PaintingStats, PaintingStatus, PaintingSummary } from "./types";
 
 /** What a new assignment shows: the canvas, and the reference when the painting has one. */
@@ -47,7 +46,6 @@ export type RejectReason =
   | "token_expired"
   | "painting_not_active"
   | "stale_assignment"
-  | "brush_too_small"
   | "invalid_stroke"
   | "too_many_strokes"
   | "temporary_failure";
@@ -67,7 +65,6 @@ export interface SubmitResult {
   detail?: string;
   /** Index (in the submitted batch) of the stroke that was rejected. */
   index?: number;
-  min_brush_size?: number;
 }
 
 /** Self-reported details recorded with a submission (never trusted for anything else). */
@@ -115,7 +112,6 @@ interface Meta extends Record<string, SqlStorageValue> {
   created_at: number;
   finished_at: number | null;
   strokes_per_assignment: number;
-  phases: string;
   reference: string | null;
   agent_key_hash: string | null;
   owner_key_hash: string | null;
@@ -144,10 +140,6 @@ export function referenceKey(paintingId: string) {
 
 function checkpointKey(paintingId: string) {
   return `paintings/${paintingId}/checkpoint.apb`;
-}
-
-function styleOf(meta: Meta): Style {
-  return STYLES[isStyleName(meta.style) ? meta.style : "figurative"];
 }
 
 /**
@@ -189,7 +181,7 @@ export class Painting extends DurableObject<Env> {
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, style TEXT NOT NULL, prompt TEXT,
       width INTEGER NOT NULL, height INTEGER NOT NULL, max_strokes INTEGER NOT NULL,
       status TEXT NOT NULL, version INTEGER NOT NULL, created_at INTEGER NOT NULL, finished_at INTEGER,
-      strokes_per_assignment INTEGER NOT NULL, phases TEXT NOT NULL, reference TEXT,
+      strokes_per_assignment INTEGER NOT NULL, reference TEXT,
       agent_key_hash TEXT, owner_key_hash TEXT, assignments INTEGER NOT NULL DEFAULT 0
     )`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS strokes (
@@ -204,8 +196,8 @@ export class Painting extends DurableObject<Env> {
     this.sql.exec("CREATE TABLE IF NOT EXISTS reference (grid BLOB NOT NULL)");
     this.sql.exec(
       `INSERT INTO meta (id, kind, style, prompt, width, height, max_strokes, status, version, created_at,
-        strokes_per_assignment, phases, reference, agent_key_hash, owner_key_hash)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?)`,
+        strokes_per_assignment, reference, agent_key_hash, owner_key_hash)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?)`,
       summary.id,
       summary.kind,
       summary.style,
@@ -215,7 +207,6 @@ export class Painting extends DurableObject<Env> {
       summary.maxStrokes,
       summary.createdAt,
       summary.strokesPerAssignment,
-      summary.phases,
       summary.reference,
       created?.agentKeyHash ?? null,
       created?.ownerKeyHash ?? null,
@@ -342,24 +333,11 @@ export class Painting extends DurableObject<Env> {
       const canvas = this.canvas;
       if (!canvas) return this.result(meta, token, 0, { reason: "painting_not_active" });
 
-      const style = styleOf(meta);
       const prepared: string[] = [];
       for (const [i, stroke] of strokes.entries()) {
         const bounds = checkBounds(stroke, meta.width, meta.height);
         if (bounds)
           return this.result(meta, token, 0, { reason: "invalid_stroke", detail: bounds, index: i });
-        if (meta.phases === "enforced") {
-          const phase = currentPhase(style, meta.version + i, meta.max_strokes);
-          const floor = scaledMinBrush(phase.minBrushSize, meta.width);
-          if (stroke.brush.size < floor) {
-            return this.result(meta, token, 0, {
-              reason: "brush_too_small",
-              detail: `Phase '${phase.name}' requires brush.size >= ${floor}, got ${stroke.brush.size}.`,
-              index: i,
-              min_brush_size: floor,
-            });
-          }
-        }
         const data = JSON.stringify(normalize(stroke, meta.width, meta.height));
         try {
           validateStroke(data);
@@ -540,7 +518,6 @@ export class Painting extends DurableObject<Env> {
   }
 
   private metadata(meta: Meta, token: TokenRow, newAssignment: boolean): AssignmentMetadata {
-    const style = styleOf(meta);
     const fields: AssignmentMetadata = {
       token: makeToken(meta.id, token.secret),
       painting_id: meta.id,
@@ -550,17 +527,11 @@ export class Painting extends DurableObject<Env> {
       max_brush_size: maxBrushSize(meta.width),
       medium: MEDIUM,
       medium_description: MEDIUM_DESCRIPTION,
-      style: style.name,
+      style: meta.style,
       stroke_count: meta.version,
       max_strokes: meta.max_strokes,
       painting_strokes_remaining: meta.max_strokes - meta.version,
     };
-    if (meta.phases !== "off") {
-      const phase = currentPhase(style, meta.version, meta.max_strokes);
-      fields.phase = phase.name;
-      fields.phase_guidance = phase.guidance;
-      if (meta.phases === "enforced") fields.min_brush_size = scaledMinBrush(phase.minBrushSize, meta.width);
-    }
     fields.expires_in_seconds = Math.max(0, Math.round((token.expires_at - Date.now()) / 1000));
     if (meta.kind === "created") {
       fields.assignment = token.assignment;

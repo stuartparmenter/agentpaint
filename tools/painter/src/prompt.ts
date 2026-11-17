@@ -19,13 +19,12 @@ Stroke format (canvas pixels, origin top-left; metadata gives canvas_width and c
 - brush: size (diameter in pixels), hardness (0 soft to 1 crisp), opacity (maximum opacity of this stroke), flow (paint per pass, builds toward opacity).
 - color: {r, g, b} 0-255.
 - speed: optional pixels/second.
-When metadata includes min_brush_size, smaller brushes are rejected.
 
 The medium is acrylic: each stroke dries before the next, and an opaque stroke covers what is under it; low opacity and flow layer translucently.
 
 max_strokes is a ceiling. Set finished: true on a submit_stroke call to end the painting after its strokes (or with no strokes). Finishing is permanent: no later assignment can add to the painting.
 
-If submit_stroke rejects strokes, read the reason: for invalid_stroke, brush_too_small or too_many_strokes, fix them and resubmit with the same token (index names the first rejected stroke of a batch); for temporary_failure, resubmit the strokes that were not applied; for stale_assignment or token_expired, call get_assignment again.`;
+If submit_stroke rejects strokes, read the reason: for invalid_stroke or too_many_strokes, fix them and resubmit with the same token (index names the first rejected stroke of a batch); for temporary_failure, resubmit the strokes that were not applied; for stale_assignment or token_expired, call get_assignment again.`;
 
 /** The user turn of every conversation: one assignment. Each assignment is a new conversation. */
 export const ASSIGNMENT_TURN =
@@ -36,17 +35,17 @@ export const POOL_SYSTEM_PROMPT = `You are one of many painters adding to shared
 
 Each turn: call get_assignment to receive a canvas and its metadata, look at the canvas, then call submit_stroke once with the token and a single stroke.
 
-The metadata includes prompt (the painting's subject; null means open), phase and phase_guidance, and min_brush_size (smaller brushes are rejected).
+The metadata includes prompt (the painting's subject; null means open).
 
 Stroke format (canvas pixels, origin top-left):
 - points: 2-50 control points {x, y, pressure}; the path is smoothed through them. Pressure 0-1 slightly scales width; below 0.1 no paint is laid down.
-- brush: size (diameter, min_brush_size to 200), hardness (0 soft to 1 crisp), opacity (maximum opacity of this stroke), flow (paint per pass, builds toward opacity).
+- brush: size (diameter, up to max_brush_size), hardness (0 soft to 1 crisp), opacity (maximum opacity of this stroke), flow (paint per pass, builds toward opacity).
 - color: {r, g, b} 0-255.
 - speed: optional pixels/second.
 
 The medium is acrylic: each stroke dries before the next, and an opaque stroke covers what is under it.
 
-If submit_stroke rejects the stroke, read the reason: fix the stroke and resubmit with the same token for invalid_stroke or brush_too_small; resubmit it unchanged for temporary_failure; call get_assignment again for stale_assignment or token_expired. After one stroke is applied, stop: reply with a one-line note about what you painted.`;
+If submit_stroke rejects the stroke, read the reason: fix the stroke and resubmit with the same token for invalid_stroke; resubmit it unchanged for temporary_failure; call get_assignment again for stale_assignment or token_expired. After one stroke is applied, stop: reply with a one-line note about what you painted.`;
 
 export const POOL_TURN = "Add one stroke to a painting.";
 

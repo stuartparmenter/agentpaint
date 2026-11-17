@@ -100,7 +100,7 @@ function goWith(key, value) {
 }
 
 function conditionLabel(c) {
-  return `${capitalize(c.style)} · ${c.size ?? "custom"} ${c.width}×${c.height} · ${c.maxStrokes} strokes · phases ${c.phases} · ${plural(c.runs, "run")}`;
+  return `${capitalize(c.style)} · ${c.size ?? "custom"} ${c.width}×${c.height} · ${c.maxStrokes} strokes · ${plural(c.runs, "run")}`;
 }
 
 const selectedCondition = (data) => data.conditions.find((c) => c.key === data.condition) ?? null;
@@ -410,7 +410,6 @@ function startPanel(data, condition) {
     style,
     size,
     max_strokes: condition?.maxStrokes,
-    phases: condition?.phases ?? "off",
   };
   // Only id-shaped names go into a command someone will paste into a shell.
   const models = [...new Set(data.paintings.flatMap((p) => p.models))]
@@ -430,7 +429,6 @@ function startPanel(data, condition) {
     `--reference ${data.reference.id}`,
     `--size ${size}`,
     ...(max ? [`--max-strokes ${max}`] : []),
-    `--phases ${test.phases}`,
   ].join(" ");
 
   return el("section", { className: "panel start-run" }, [

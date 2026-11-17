@@ -54,14 +54,14 @@ function jpegSize(b64: string) {
   return { signature, width: 0, height: 0 };
 }
 
-function bigStroke(meta: { canvas_width: number; canvas_height: number; min_brush_size: number }, y: number) {
+function bigStroke(meta: { canvas_width: number; canvas_height: number }, y: number) {
   return {
     points: [
       { x: 0, y, pressure: 0.9 },
       { x: meta.canvas_width / 2, y: y + 40, pressure: 1 },
       { x: meta.canvas_width, y, pressure: 0.9 },
     ],
-    brush: { size: Math.max(meta.min_brush_size, 60), hardness: 0.5, opacity: 1, flow: 0.9 },
+    brush: { size: 60, hardness: 0.5, opacity: 1, flow: 0.9 },
     color: { r: 40, g: 90, b: 160 },
   };
 }
@@ -102,8 +102,8 @@ const first = await call(client, "get_assignment");
 const meta = first.json;
 const image = first.content.find((c) => c.type === "image");
 check(
-  "assignment has a token and phase",
-  typeof meta?.token === "string" && typeof meta?.phase === "string",
+  "assignment has a token and the canvas's max_brush_size",
+  typeof meta?.token === "string" && meta?.max_brush_size === 200,
   meta,
 );
 const jpeg = image?.data ? jpegSize(image.data) : undefined;
@@ -116,14 +116,10 @@ const startCount: number = meta?.stroke_count;
 check("the assignment reports the stroke count", Number.isInteger(startCount) && startCount >= 0, startCount);
 
 const paintingId: string = meta.painting_id;
-const tiny = bigStroke(meta, 300);
-tiny.brush.size = 1;
-const tooSmall = await call(client, "submit_stroke", { token: meta.token, stroke_data: tiny });
-check(
-  "rejects a brush below the phase minimum",
-  tooSmall.result.isError === true && tooSmall.json?.reason === "brush_too_small",
-  tooSmall.json,
-);
+const huge = bigStroke(meta, 300);
+huge.brush.size = meta.max_brush_size + 1;
+const bigBrush = await call(client, "submit_stroke", { token: meta.token, stroke_data: huge });
+check("rejects a brush above max_brush_size", bigBrush.result.isError === true, bigBrush.content);
 
 const offCanvas = bigStroke(meta, 300);
 offCanvas.points[0] = { x: -500, y: 300, pressure: 1 };
@@ -321,14 +317,12 @@ check(
 );
 const m1 = assignment1.json;
 check(
-  "assignment metadata reports both counts and omits phase fields when phases are off",
+  "assignment metadata reports both counts",
   m1.assignment_strokes_remaining === 3 &&
     m1.painting_strokes_remaining === m1.max_strokes &&
     m1.max_strokes > 3 &&
     m1.new_assignment === true &&
-    m1.assignment === 1 &&
-    !("phase" in m1) &&
-    !("min_brush_size" in m1),
+    m1.assignment === 1,
   m1,
 );
 check("assignment metadata names the painting", m1.painting_id === p.id, m1.painting_id);
@@ -519,7 +513,6 @@ const sibling = await create({
   reference: "krita-sunset",
   size: "study",
   strokes_per_assignment: 250,
-  phases: "enforced",
   series: p.series_id,
   series_key: p.series_key,
 });
@@ -531,10 +524,8 @@ check(
 const sib = await connect(new URL(`${base}/mcp/p/${sibling.body.id}`), sibling.body.agent_key);
 const sibAssignment = await scopedCall(sib, "get_assignment");
 check(
-  "enforced phases send the brush floor, scaled to the canvas",
-  sibAssignment.json?.min_brush_size === 60 &&
-    typeof sibAssignment.json?.phase === "string" &&
-    sibAssignment.json?.assignment_strokes_remaining === 250,
+  "a sibling's assignment allows its own strokes per assignment",
+  sibAssignment.json?.assignment_strokes_remaining === 250,
   sibAssignment.json,
 );
 await sib.close();

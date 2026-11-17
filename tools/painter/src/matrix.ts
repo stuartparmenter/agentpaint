@@ -24,7 +24,6 @@ const { values: args } = parseArgs({
     reference: { type: "string" },
     prompt: { type: "string" },
     size: { type: "string", default: "study" },
-    phases: { type: "string", default: "off" },
     "max-strokes": { type: "string" },
     repeat: { type: "string", default: "1" },
     parallel: { type: "string", default: "3" },
@@ -46,7 +45,6 @@ if (args.help) {
   --reference      built-in reference id (e.g. krita-sunset)
   --prompt         subject text (default: none)
   --size           full | study (default study)
-  --phases         off | guidance | enforced (default off)
   --max-strokes    stroke budget (default: the style's for the size)
   --repeat         paintings per cell (default 1)
   --parallel       paintings painted at once (default 3)
@@ -120,7 +118,7 @@ async function create(settings: Record<string, unknown>) {
 
 console.log(
   `Matrix: ${models.length} model(s) x ${perAssignment.length} strokes-per-assignment setting(s) x ${repeat} = ${cells.length} paintings; ` +
-    `${args.style}, ${size}, budget ${budget}, phases ${args.phases}, effort ${effort ?? "default"}, prompts ${PROMPT_HASH}`,
+    `${args.style}, ${size}, budget ${budget}, effort ${effort ?? "default"}, prompts ${PROMPT_HASH}`,
 );
 
 let series: { id: string; key: string } | null = null;
@@ -132,7 +130,6 @@ for (const cell of cells) {
     size,
     max_strokes: budget,
     strokes_per_assignment: cell.strokesPerAssignment,
-    phases: args.phases,
     ...(series ? { series: series.id, series_key: series.key } : {}),
   });
   series ??= { id: body.series_id, key: body.series_key };
