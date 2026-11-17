@@ -29,7 +29,6 @@ const { values: args } = parseArgs({
     parallel: { type: "string", default: "3" },
     effort: { type: "string", default: "medium" },
     "thinking-budget": { type: "string", default: "8000" },
-    "keep-context": { type: "boolean", default: false },
     random: { type: "boolean", default: false },
     help: { type: "boolean", short: "h" },
   },
@@ -50,7 +49,6 @@ if (args.help) {
   --repeat         paintings per cell (default 1)
   --parallel       paintings painted at once (default 3)
   --effort         ${EFFORTS.join(" | ")} (default medium; sent only where supported)
-  --keep-context   one conversation per painting (default: a fresh one per look)
   --random         random strokes instead of Claude`);
   process.exit(0);
 }
@@ -119,7 +117,7 @@ async function create(settings: Record<string, unknown>) {
 
 console.log(
   `Matrix: ${models.length} model(s) x ${looks.length} look setting(s) x ${repeat} = ${cells.length} paintings; ` +
-    `${args.style}, ${size}, budget ${budget}, phases ${args.phases}, ${args["keep-context"] ? "keep" : "fresh"} context, prompts ${PROMPT_HASH}`,
+    `${args.style}, ${size}, budget ${budget}, phases ${args.phases}, prompts ${PROMPT_HASH}`,
 );
 
 let series: { id: string; key: string } | null = null;
@@ -177,7 +175,6 @@ await Promise.all(
           model: cell.model,
           effort,
           thinkingBudget,
-          context: args["keep-context"] ? "keep" : "fresh",
           maxLooks: budget + 10,
           log: (line) => console.log(`${tag} ${line}`),
         });

@@ -5,7 +5,6 @@ import type Anthropic from "@anthropic-ai/sdk";
 import { betaTool } from "@anthropic-ai/sdk/helpers/beta/json-schema";
 import type {
   BetaMessage,
-  BetaMessageParam,
   BetaToolResultContentBlockParam,
   BetaUsage,
 } from "@anthropic-ai/sdk/resources/beta";
@@ -13,7 +12,7 @@ import type { Client } from "@modelcontextprotocol/client";
 import { MAX_BATCH } from "../../../apps/worker/src/config";
 import { type Effort, type ModelParams, paramsFor, requestFields } from "./capabilities";
 import { callTool, connect, firstJson, type Json, type McpContent } from "./mcp";
-import { CONTINUE_TURN, LOOK_TURN, PAINTING_TURN, PROMPT_HASH, SYSTEM_PROMPT } from "./prompt";
+import { LOOK_TURN, PROMPT_HASH, SYSTEM_PROMPT } from "./prompt";
 import { type LookMeta, randomStroke } from "./random";
 
 /** Fields the painter fills in itself; hidden from the model's view of submit_stroke. */
@@ -27,7 +26,6 @@ export interface PaintOptions {
   model: string;
   effort: Effort;
   thinkingBudget: number;
-  context: "fresh" | "keep";
   /** Stop after this many looks (a safety cap; the painting's budget normally ends the run). */
   maxLooks: number;
   log: (line: string) => void;
@@ -227,54 +225,45 @@ async function paintWithClaude(
   const { tools: mcpTools } = await mcp.listTools();
   const tools = claudeTools(mcpTools, run, { submit_stroke: SELF_REPORTED });
 
-  const keep = opts.context === "keep";
   const base = {
     ...requestFields(params),
     system: SYSTEM_PROMPT,
     cache_control: { type: "ephemeral" as const },
     tools,
-    // Most API calls the tool runner makes for one user turn.
-    max_iterations: keep ? 5000 : 40,
-    // Full history every turn: plain Messages API behavior on every model generation.
+    // Most API calls the tool runner makes for one look.
+    max_iterations: 40,
+    // Plain Messages API behavior on every model generation.
     thread: false as const,
   };
 
-  /** Run one conversation; returns its messages, or a stop reason. */
-  const converse = async (
-    messages: BetaMessageParam[],
-  ): Promise<{ stop: string } | { history: BetaMessageParam[] }> => {
-    const runner = anthropic.beta.messages.toolRunner({ ...base, messages });
+  /** Run one look as a new conversation; returns a stop reason, or null to go on. */
+  const look = async (): Promise<string | null> => {
+    const runner = anthropic.beta.messages.toolRunner({
+      ...base,
+      messages: [{ role: "user", content: LOOK_TURN }],
+    });
     let last: BetaMessage | null = null;
     for await (const message of runner) {
       t.noteMessage(message);
       last = message;
-      if (message.stop_reason === "refusal")
-        return { stop: `refusal: ${message.stop_details?.category ?? "unknown"}` };
+      if (message.stop_reason === "refusal") return `refusal: ${message.stop_details?.category ?? "unknown"}`;
       if (message.stop_reason === "max_tokens") opts.log("reply hit max_tokens");
     }
-    const history = [...runner.params.messages];
-    if (last && history.at(-1)?.role !== "assistant")
-      history.push({ role: "assistant", content: last.content });
     const note = last?.content.find((b) => b.type === "text");
     if (note?.type === "text") opts.log(`model: ${note.text.trim().split("\n")[0]}`);
-    return { history };
+    return null;
   };
 
-  // Fresh context starts a new conversation with LOOK_TURN for every look. Kept
-  // context starts with PAINTING_TURN and continues the same conversation with
-  // CONTINUE_TURN.
-  let history: BetaMessageParam[] = [];
+  // Every look is a new conversation, so the canvas is all a look carries over.
   let idle = 0;
   while (t.active) {
     if (t.looks >= opts.maxLooks) return "max looks reached";
     const before = t.strokes;
-    const turn = history.length ? CONTINUE_TURN : keep ? PAINTING_TURN : LOOK_TURN;
-    const r = await converse([...history, { role: "user", content: turn }]);
-    if ("stop" in r) return r.stop;
+    const stop = await look();
+    if (stop) return stop;
     if (!t.active) break;
     idle = t.strokes === before ? idle + 1 : 0;
-    if (idle >= 3) return `no strokes in 3 ${keep ? "turns" : "conversations"}`;
-    if (keep) history = r.history;
+    if (idle >= 3) return "no strokes in 3 conversations";
   }
   return t.status;
 }

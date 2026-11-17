@@ -129,7 +129,7 @@ The e2e checks for agent-bound tokens need a second agent in `MCP_TOKENS`.
 A created painting, until it is finished:
 
 ```sh
-bun run paint -- --url <MCP URL> --model claude-opus-5-5 [--effort medium] [--keep-context]
+bun run paint -- --url <MCP URL> --model claude-opus-5-5 [--effort medium]
 bun run paint -- --url <MCP URL> --random          # random strokes, no Claude
 ```
 
@@ -180,8 +180,8 @@ Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
 
   Each model gets only the parameters it supports (from the Models API): effort where supported,
   adaptive thinking where supported, otherwise extended thinking with `--thinking-budget` tokens.
-  No fallback model is used. `--keep-context` keeps one conversation across a painting's looks
-  (every look's images stay in context); the default starts a fresh conversation per look. Keys for
+  No fallback model is used. Every look is a new conversation, so the canvas is the only thing a
+  look carries over from earlier ones. Keys for
   the created paintings are saved to `.matrix/<series>.json`.
 - **Greedy baseline.** A non-model reference point: for each stroke of the budget it tries random
   candidate strokes (same format and brush, color sampled from the reference, brush size shrinking

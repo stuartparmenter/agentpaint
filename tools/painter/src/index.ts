@@ -3,7 +3,7 @@
 //
 // A painting's own MCP URL (/mcp/p/<id>/<key>) paints that painting until it is
 // finished:
-//   bun src/index.ts --url https://…/mcp/p/<id>/<key> [--model ID] [--effort LEVEL] [--keep-context]
+//   bun src/index.ts --url https://…/mcp/p/<id>/<key> [--model ID] [--effort LEVEL]
 //
 // The pooled endpoint (/mcp, with AGENTPAINT_TOKEN) paints single strokes on
 // whatever paintings the pool assigns:
@@ -26,8 +26,6 @@ const { values: args } = parseArgs({
     model: { type: "string" },
     effort: { type: "string" },
     "thinking-budget": { type: "string", default: "8000" },
-    "fresh-context": { type: "boolean", default: false },
-    "keep-context": { type: "boolean", default: false },
     "max-looks": { type: "string", default: "2000" },
     strokes: { type: "string", default: "10" },
     workers: { type: "string", default: "1" },
@@ -44,8 +42,6 @@ if (args.help) {
   --model            Claude model (default $PAINTER_MODEL or claude-opus-5-5)
   --effort           ${EFFORTS.join(" | ")} (default $PAINTER_EFFORT or medium); sent only to models that support it
   --thinking-budget  extended-thinking tokens for models without adaptive thinking (default 8000)
-  --fresh-context    a new conversation for every look (default)
-  --keep-context     one conversation across all looks of the painting
   --max-looks        stop a painting after this many looks (default 2000)
   --random           random strokes, no Claude
   Pooled endpoint only (with AGENTPAINT_TOKEN):
@@ -58,7 +54,6 @@ const url = new URL(args.url ?? process.env.AGENTPAINT_MCP_URL ?? "http://127.0.
 const model = args.model ?? process.env.PAINTER_MODEL ?? "claude-opus-5-5";
 const effort = (args.effort ?? process.env.PAINTER_EFFORT ?? "medium") as Effort;
 if (!EFFORTS.includes(effort)) fail(`--effort must be one of ${EFFORTS.join(", ")}`);
-if (args["fresh-context"] && args["keep-context"]) fail("choose --fresh-context or --keep-context, not both");
 const thinkingBudget = positiveInt(args["thinking-budget"], "--thinking-budget");
 
 const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
@@ -76,9 +71,8 @@ if (scoped) {
   const bearer = withKey ? undefined : process.env.AGENTPAINT_TOKEN;
   if (!withKey && !bearer)
     fail("this URL has no key in its path; set AGENTPAINT_TOKEN to the painting's agent key");
-  const context = args["keep-context"] ? "keep" : "fresh";
   console.log(
-    `Painting ${url.pathname.split("/")[3]}: ${args.random ? "random strokes" : `${model}, effort ${effort}, ${context} context`}, prompts ${PROMPT_HASH}`,
+    `Painting ${url.pathname.split("/")[3]}: ${args.random ? "random strokes" : `${model}, effort ${effort}, a new conversation per look`}, prompts ${PROMPT_HASH}`,
   );
   const summary = await paintScoped(anthropic, {
     mcpUrl: url,
@@ -87,7 +81,6 @@ if (scoped) {
     model,
     effort,
     thinkingBudget,
-    context,
     maxLooks: positiveInt(args["max-looks"], "--max-looks"),
     log: (line) => console.log(line),
   });

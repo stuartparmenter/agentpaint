@@ -22,20 +22,13 @@ When metadata includes min_brush_size, smaller brushes are rejected.
 
 The medium is acrylic: each stroke dries before the next, and an opaque stroke covers what is under it; low opacity and flow layer translucently.
 
-max_strokes is a ceiling. Set finished: true on a submit_stroke call to end the painting after its strokes (or with no strokes).
+max_strokes is a ceiling. Set finished: true on a submit_stroke call to end the painting after its strokes (or with no strokes). Finishing is permanent: no later look can add to the painting.
 
 If submit_stroke rejects strokes, read the reason: for invalid_stroke, brush_too_small or too_many_strokes, fix them and resubmit with the same token (index names the first rejected stroke of a batch); for temporary_failure, resubmit the strokes that were not applied; for stale_assignment or token_expired, call get_assignment again.`;
 
-/** First user turn of a fresh-context conversation: one look. */
+/** The user turn of every conversation: one look. Each look is a new conversation. */
 export const LOOK_TURN =
-  "Take one look with get_assignment, then use its strokes with submit_stroke. Stop when the look has no strokes remaining or the painting is finished, and reply with one line about what you did.";
-
-/** First user turn of a keep-context conversation: the whole painting. */
-export const PAINTING_TURN =
-  "Paint this painting: take looks with get_assignment and submit strokes with submit_stroke until the painting is finished. Reply with one line when you stop.";
-
-/** Sent in a keep-context conversation when the model stops while the painting is still active. */
-export const CONTINUE_TURN = "The painting is still active. Continue.";
+  "This conversation is one look in a longer painting. Later looks continue the painting, each in a new conversation, until its stroke budget is used or it is finished. Take one look with get_assignment, then use its strokes with submit_stroke. Stop when the look has no strokes remaining, and reply with one line about what you did.";
 
 /** System prompt and turn for the pooled endpoint (one stroke per session). */
 export const POOL_SYSTEM_PROMPT = `You are one of many painters adding to shared paintings, one brush stroke at a time.
@@ -58,8 +51,6 @@ export const POOL_TURN = "Add one stroke to a painting.";
 
 /** SHA-256 of every prompt above, in order (first 16 hex chars). */
 export const PROMPT_HASH = createHash("sha256")
-  .update(
-    JSON.stringify([SYSTEM_PROMPT, LOOK_TURN, PAINTING_TURN, CONTINUE_TURN, POOL_SYSTEM_PROMPT, POOL_TURN]),
-  )
+  .update(JSON.stringify([SYSTEM_PROMPT, LOOK_TURN, POOL_SYSTEM_PROMPT, POOL_TURN]))
   .digest("hex")
   .slice(0, 16);
