@@ -12,8 +12,8 @@ import type { Client } from "@modelcontextprotocol/client";
 import { MAX_BATCH } from "../../../apps/worker/src/config";
 import { type Effort, type ModelParams, paramsFor, requestFields } from "./capabilities";
 import { callTool, connect, firstJson, type Json, type McpContent } from "./mcp";
-import { LOOK_TURN, PROMPT_HASH, SYSTEM_PROMPT } from "./prompt";
-import { type LookMeta, randomStroke } from "./random";
+import { ASSIGNMENT_TURN, PROMPT_HASH, SYSTEM_PROMPT } from "./prompt";
+import { type AssignmentMeta, randomStroke } from "./random";
 
 /** Fields the painter fills in itself; hidden from the model's view of submit_stroke. */
 const SELF_REPORTED = ["model", "effort", "input_tokens", "output_tokens", "prompt_hash"];
@@ -24,21 +24,22 @@ export interface PaintOptions {
   bearer?: string;
   random: boolean;
   model: string;
-  effort: Effort;
+  /** Null sends no effort, so the model runs at its default. */
+  effort: Effort | null;
   thinkingBudget: number;
-  /** Stop after this many looks (a safety cap; the painting's budget normally ends the run). */
-  maxLooks: number;
-  /** Receives each look's thinking summaries, where the model returns them. */
+  /** Stop after this many assignments (a safety cap; the painting's budget normally ends the run). */
+  maxAssignments: number;
+  /** Receives each assignment's thinking summaries, where the model returns them. */
   onThinking?: (entry: ThinkingEntry) => void;
   log: (line: string) => void;
 }
 
-/** The thinking summaries from one look's conversation. */
+/** The thinking summaries from one assignment's conversation. */
 export interface ThinkingEntry {
-  look: number;
+  assignment: number;
   strokesBefore: number;
   strokesAfter: number;
-  /** The painting ended during this look. */
+  /** The painting ended during this assignment. */
   ended: boolean;
   thinking: string[];
 }
@@ -46,7 +47,7 @@ export interface ThinkingEntry {
 export interface PaintSummary {
   status: string;
   strokes: number;
-  looks: number;
+  assignments: number;
   inputTokens: number;
   outputTokens: number;
   /** Models named in the API responses. */
@@ -103,7 +104,7 @@ export function inputTokens(usage: BetaUsage): number {
 class Tracker {
   status = "active";
   strokes = 0;
-  looks = 0;
+  assignments = 0;
   inputTokens = 0;
   outputTokens = 0;
   models = new Set<string>();
@@ -128,7 +129,7 @@ class Tracker {
 
   noteAssignment(meta: Json) {
     if (meta.available === false) this.status = meta.status ?? "done";
-    if (meta.new_look) this.looks += 1;
+    if (meta.new_assignment) this.assignments += 1;
   }
 
   noteSubmit(result: Json) {
@@ -149,7 +150,7 @@ export async function paintScoped(anthropic: Anthropic | null, opts: PaintOption
       if (!anthropic) throw new Error("painting with Claude needs an Anthropic client");
       const params = await paramsFor(anthropic, opts.model, opts.effort, opts.thinkingBudget);
       sent = params.sent;
-      opts.log(`sending: effort ${sent.effort ?? "(not sent)"}, thinking ${sent.thinking}`);
+      opts.log(`sending: effort ${sent.effort ?? "default (not sent)"}, thinking ${sent.thinking}`);
       stopReason = await paintWithClaude(anthropic, mcp, t, params, opts);
     }
   } finally {
@@ -158,7 +159,7 @@ export async function paintScoped(anthropic: Anthropic | null, opts: PaintOption
   return {
     status: t.status,
     strokes: t.strokes,
-    looks: t.looks,
+    assignments: t.assignments,
     inputTokens: t.inputTokens,
     outputTokens: t.outputTokens,
     models: [...t.models],
@@ -169,15 +170,15 @@ export async function paintScoped(anthropic: Anthropic | null, opts: PaintOption
 
 async function paintRandom(mcp: Client, t: Tracker, opts: PaintOptions): Promise<string> {
   while (t.active) {
-    if (t.looks >= opts.maxLooks) return "max looks reached";
-    const look = await callTool(mcp, "get_assignment", {}, opts.log);
-    const meta = firstJson(look.content as McpContent[]);
+    if (t.assignments >= opts.maxAssignments) return "max assignments reached";
+    const assignment = await callTool(mcp, "get_assignment", {}, opts.log);
+    const meta = firstJson(assignment.content as McpContent[]);
     t.noteAssignment(meta);
     if (!t.active || typeof meta.token !== "string") break;
-    let remaining: number = meta.strokes_remaining ?? 1;
+    let remaining: number = meta.assignment_strokes_remaining ?? 1;
     while (remaining > 0 && t.active) {
       const n = Math.min(remaining, MAX_BATCH);
-      const strokes = Array.from({ length: n }, () => randomStroke(meta as LookMeta));
+      const strokes = Array.from({ length: n }, () => randomStroke(meta as AssignmentMeta));
       const res = await callTool(
         mcp,
         "submit_stroke",
@@ -187,9 +188,9 @@ async function paintRandom(mcp: Client, t: Tracker, opts: PaintOptions): Promise
       const result = firstJson(res.content as McpContent[]);
       t.noteSubmit(result);
       if (!result.applied) return `rejected: ${result.reason}`;
-      remaining = result.strokes_remaining ?? 0;
+      remaining = result.assignment_strokes_remaining ?? 0;
     }
-    opts.log(`look ${t.looks}: ${t.strokes} strokes`);
+    opts.log(`assignment ${t.assignments}: ${t.strokes} strokes`);
   }
   return t.status;
 }
@@ -222,14 +223,16 @@ async function paintWithClaude(
       opts.log(
         json.available === false
           ? `get_assignment: painting ${json.status}`
-          : `get_assignment: look ${json.look}${json.new_look ? "" : " (still open)"}, ${json.strokes_remaining} stroke(s) allowed, ${json.stroke_count}/${json.max_strokes} painted`,
+          : `get_assignment: assignment ${json.assignment}${json.new_assignment ? "" : " (still open)"}, ${json.assignment_strokes_remaining} stroke(s) allowed, ${json.stroke_count}/${json.max_strokes} painted`,
       );
     } else if (name === "submit_stroke") {
       t.noteSubmit(json);
       opts.log(
         json.applied
-          ? `submit_stroke: ${json.applied_count} applied (${json.stroke_count}/${json.max_strokes}, ${json.strokes_remaining} left on the look)${json.status === "done" ? ", painting done" : ""}`
-          : `submit_stroke: rejected ${json.reason}${json.index !== undefined ? ` at ${json.index}` : ""}${json.detail ? ` (${json.detail})` : ""}`,
+          ? `submit_stroke: ${json.applied_count} applied (${json.stroke_count}/${json.max_strokes}, ${json.assignment_strokes_remaining} left on the assignment)${args.finished ? ", finished: true" : ""}${json.status === "done" ? ", painting done" : ""}`
+          : json.reason === undefined
+            ? `submit_stroke: rejected (${content.find((c) => c.type === "text")?.text?.slice(0, 200) ?? "no text"})`
+            : `submit_stroke: rejected ${json.reason}${json.index !== undefined ? ` at ${json.index}` : ""}${json.detail ? ` (${json.detail})` : ""}`,
       );
     }
     return toToolContent(content);
@@ -242,17 +245,17 @@ async function paintWithClaude(
     system: SYSTEM_PROMPT,
     cache_control: { type: "ephemeral" as const },
     tools,
-    // Most API calls the tool runner makes for one look.
+    // Most API calls the tool runner makes for one assignment.
     max_iterations: 40,
     // Plain Messages API behavior on every model generation.
     thread: false as const,
   };
 
-  /** Run one look as a new conversation; returns a stop reason, or null to go on. */
-  const look = async (): Promise<string | null> => {
+  /** Run one assignment as a new conversation; returns a stop reason, or null to go on. */
+  const runAssignment = async (): Promise<string | null> => {
     const runner = anthropic.beta.messages.toolRunner({
       ...base,
-      messages: [{ role: "user", content: LOOK_TURN }],
+      messages: [{ role: "user", content: ASSIGNMENT_TURN }],
     });
     let last: BetaMessage | null = null;
     const before = t.strokes;
@@ -269,7 +272,7 @@ async function paintWithClaude(
     if (thinking.length) {
       opts.log(`thinking: ${thinking[0]?.split("\n")[0]?.slice(0, 200)}`);
       opts.onThinking?.({
-        look: t.looks,
+        assignment: t.assignments,
         strokesBefore: before,
         strokesAfter: t.strokes,
         ended: !t.active,
@@ -281,12 +284,12 @@ async function paintWithClaude(
     return null;
   };
 
-  // Every look is a new conversation, so the canvas is all a look carries over.
+  // Every assignment is a new conversation, so the canvas is all an assignment carries over.
   let idle = 0;
   while (t.active) {
-    if (t.looks >= opts.maxLooks) return "max looks reached";
+    if (t.assignments >= opts.maxAssignments) return "max assignments reached";
     const before = t.strokes;
-    const stop = await look();
+    const stop = await runAssignment();
     if (stop) return stop;
     if (!t.active) break;
     idle = t.strokes === before ? idle + 1 : 0;

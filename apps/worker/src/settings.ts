@@ -12,7 +12,7 @@ export const createInput = z.object({
   reference: z.string().max(64).nullable().optional(),
   size: z.enum(Object.keys(SIZES) as [SizeName, ...SizeName[]]).default("full"),
   max_strokes: z.number().int().min(1).max(MAX_STROKES_LIMIT).optional(),
-  strokes_per_look: z.number().int().min(1).max(MAX_STROKES_LIMIT).default(1),
+  strokes_per_assignment: z.number().int().min(1).max(MAX_STROKES_LIMIT).default(1),
   phases: z.enum(PHASE_MODES).default("off"),
   series: z.string().regex(SERIES_ID).optional(),
   series_key: z.string().regex(KEY).optional(),

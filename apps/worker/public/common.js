@@ -120,40 +120,42 @@ export function fmtDate(ms) {
 }
 
 /**
- * A look setting's name. A look is the agent seeing the canvas; the setting is how
- * many strokes it places between looks.
+ * A strokes-per-assignment setting, named by its effect. Each assignment shows the
+ * agent the canvas and allows that many strokes.
  */
-export function lookLabel(strokesPerLook, maxStrokes) {
-  if (maxStrokes && strokesPerLook >= maxStrokes) return "One look at the start";
-  return strokesPerLook === 1 ? "Looks after every stroke" : `Looks every ${strokesPerLook} strokes`;
+export function assignmentLabel(strokesPerAssignment, maxStrokes) {
+  if (maxStrokes && strokesPerAssignment >= maxStrokes) return "Sees the canvas once, at the start";
+  return strokesPerAssignment === 1
+    ? "Sees the canvas after every stroke"
+    : `Sees the canvas every ${strokesPerAssignment} strokes`;
 }
 
-/** What a look setting means for the agent, for hover text. */
-export function lookHelp(strokesPerLook, maxStrokes) {
-  if (maxStrokes && strokesPerLook >= maxStrokes) {
-    return `The agent sees the reference and the blank canvas once, then places all ${maxStrokes} strokes without seeing the canvas again.`;
+/** What a strokes-per-assignment setting means for the agent, for hover text. */
+export function assignmentHelp(strokesPerAssignment, maxStrokes) {
+  if (maxStrokes && strokesPerAssignment >= maxStrokes) {
+    return `A single assignment shows the agent the blank canvas and allows all ${maxStrokes} strokes; it never sees the result.`;
   }
-  if (strokesPerLook === 1) {
-    return "The agent sees the canvas before every stroke, so it can react to each one.";
+  if (strokesPerAssignment === 1) {
+    return "Each assignment shows the agent the canvas and allows 1 stroke; it sees the result at the next assignment.";
   }
-  return `The agent sees the canvas, places ${strokesPerLook} strokes without seeing them land, then looks again.`;
+  return `Each assignment shows the agent the canvas and allows ${strokesPerAssignment} strokes; it sees the result at the next assignment.`;
 }
 
-/** A look setting's name with its explanation on hover. */
-export function lookTitle(tag, strokesPerLook, maxStrokes) {
+/** A strokes-per-assignment setting's name with its explanation on hover. */
+export function assignmentTitle(tag, strokesPerAssignment, maxStrokes) {
   return el(tag, {
     className: "has-help",
-    title: lookHelp(strokesPerLook, maxStrokes),
-    textContent: lookLabel(strokesPerLook, maxStrokes),
+    title: assignmentHelp(strokesPerAssignment, maxStrokes),
+    textContent: assignmentLabel(strokesPerAssignment, maxStrokes),
   });
 }
 
-/** A painting's look setting as a badge. */
-export function lookBadge(p) {
+/** A painting's strokes-per-assignment setting as a badge. */
+export function assignmentBadge(p) {
   return el("span", {
-    className: "badge look",
-    title: lookHelp(p.strokesPerLook, p.maxStrokes),
-    textContent: lookLabel(p.strokesPerLook, p.maxStrokes),
+    className: "badge assignment",
+    title: assignmentHelp(p.strokesPerAssignment, p.maxStrokes),
+    textContent: assignmentLabel(p.strokesPerAssignment, p.maxStrokes),
   });
 }
 

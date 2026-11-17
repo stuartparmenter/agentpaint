@@ -1,10 +1,13 @@
 // Reference tests. `/tests` lists one card per reference; `/tests/<reference>`
 // compares the runs made against one reference under one condition: results
-// table, score charts per look setting, final canvases, and a form to start a run.
+// table, score charts per strokes-per-assignment setting, final canvases, and a form
+// to start a run.
 
 import { LineChart, legend, seriesClass } from "./chart.js";
 import {
   anchorRefs,
+  assignmentLabel,
+  assignmentTitle,
   attribution,
   copyField,
   el,
@@ -14,8 +17,6 @@ import {
   fmtScore,
   fmtSeconds,
   getJson,
-  lookLabel,
-  lookTitle,
   poll,
   snapshotUrl,
   table,
@@ -71,7 +72,7 @@ async function showIndex() {
       el("p", {
         className: "small muted",
         textContent:
-          "Each test gives agents a fixed image to paint toward and scores every stroke by its similarity to it, so models and look settings can be compared on the same target.",
+          "Each test gives agents a fixed image to paint toward and scores every stroke by its similarity to it, so models and strokes-per-assignment settings can be compared on the same target.",
       }),
     ]),
     el("div", { className: "test-grid" }, cards),
@@ -135,7 +136,7 @@ async function showTest() {
     el("p", {
       className: "small muted",
       textContent:
-        "One lane per model, one column per look setting. A look is the agent seeing the canvas; the settings differ in how many strokes it places between looks (hover a column title for details). Each run shows its final canvas (linked to its playback) and numbers; repeated runs sit together in their cell.",
+        "One lane per model, one column per strokes-per-assignment setting. Each assignment shows the agent the canvas and allows a number of strokes; the settings differ in that number (hover a column title for details). Each run shows its final canvas (linked to its playback) and numbers; repeated runs sit together in their cell.",
     }),
     ui.lanes,
     ui.tableView,
@@ -240,22 +241,22 @@ function renderRuns(data, condition) {
   }));
   const colors = modelColors(cells);
   const models = [...colors.keys()];
-  const settings = [...new Set(cells.map((c) => c.strokes_per_look))].sort((a, b) => a - b);
+  const settings = [...new Set(cells.map((c) => c.strokes_per_assignment))].sort((a, b) => a - b);
   renderLanes(data, cells, colors, models, settings, max);
   renderTableView(data, cells, models, max);
   renderCharts(data, cells, colors, models, settings, max);
 }
 
-/** One lane per model: a cell per look setting holding that model's runs. */
+/** One lane per model: a cell per strokes-per-assignment setting holding that model's runs. */
 function renderLanes(data, cells, colors, models, settings, max) {
   ui.lanes.replaceChildren(
     ...models.map((m) => {
       const row = el("div", { className: "lane-cells" });
       row.style.setProperty("--cols", String(settings.length));
       for (const spl of settings) {
-        const cell = cells.find((c) => c.models === m && c.strokes_per_look === spl);
+        const cell = cells.find((c) => c.models === m && c.strokes_per_assignment === spl);
         const runs = cell?.runs ?? [];
-        const children = [lookTitle("h4", spl, max)];
+        const children = [assignmentTitle("h4", spl, max)];
         if (!runs.length) children.push(el("p", { className: "small muted", textContent: "No run" }));
         if (runs.length > 1) {
           children.push(
@@ -265,7 +266,7 @@ function renderLanes(data, cells, colors, models, settings, max) {
             }),
           );
         }
-        for (const p of runs) children.push(runItem(p, m, lookLabel(spl, max)));
+        for (const p of runs) children.push(runItem(p, m, assignmentLabel(spl, max)));
         row.append(el("div", { className: "lane-cell" }, children));
       }
       const key = el("span", { className: "lane-key" });
@@ -282,11 +283,11 @@ function renderLanes(data, cells, colors, models, settings, max) {
   );
 }
 
-function runItem(p, model, look) {
+function runItem(p, model, setting) {
   const thumb = el("img", {
     className: "thumb",
     src: snapshotUrl(p.id, p.strokeCount),
-    alt: `${model}, ${look}: canvas after ${p.strokeCount} strokes`,
+    alt: `${model}, ${setting}: canvas after ${p.strokeCount} strokes`,
     width: p.width,
     height: p.height,
     loading: "lazy",
@@ -299,7 +300,7 @@ function runItem(p, model, look) {
     ]),
     el("div", {
       className: "small muted",
-      textContent: `${p.strokeCount}/${p.maxStrokes} strokes · ${plural(p.looks, "look")} · ${fmtSeconds(p.meanThinkMs)} think`,
+      textContent: `${p.strokeCount}/${p.maxStrokes} strokes · ${plural(p.assignments, "assignment")} · ${fmtSeconds(p.meanThinkMs)} think`,
     }),
     el("div", {
       className: "small muted",
@@ -308,23 +309,24 @@ function runItem(p, model, look) {
   ]);
 }
 
-/** The lanes' numbers as one table (model, then look setting), for screen readers and copying. */
+/** The lanes' numbers as one table (model, then strokes per assignment), for screen readers and copying. */
 function renderTableView(data, cells, models, max) {
   const rows = [...cells]
     .sort(
       (a, b) =>
-        models.indexOf(a.models) - models.indexOf(b.models) || a.strokes_per_look - b.strokes_per_look,
+        models.indexOf(a.models) - models.indexOf(b.models) ||
+        a.strokes_per_assignment - b.strokes_per_assignment,
     )
     .map((r) =>
       el("tr", {}, [
         el("td", { textContent: r.models }),
-        el("td", { textContent: lookLabel(r.strokes_per_look, max) }),
+        el("td", { textContent: assignmentLabel(r.strokes_per_assignment, max) }),
         ...[
           fmtInt(r.paintings),
           fmtInt(r.finished),
           fmtScore(r.final_score, data.anchors.blank),
           fmtNum(r.strokes_used),
-          fmtNum(r.looks),
+          fmtNum(r.assignments),
           fmtSeconds(r.mean_think_ms),
           fmtInt(r.tokens_in),
           fmtInt(r.tokens_out),
@@ -334,15 +336,15 @@ function renderTableView(data, cells, models, max) {
   ui.tableView.replaceChildren(
     ui.tableSummary,
     table(
-      "Results by model and look setting; repeated runs averaged",
+      "Results by model and strokes per assignment; repeated runs averaged",
       [
         ["Model", ""],
-        ["Look setting", ""],
+        ["Strokes per assignment", ""],
         ["Runs", "num"],
         ["Finished", "num"],
         ["Final score", "num"],
         ["Strokes used", "num"],
-        ["Looks", "num"],
+        ["Assignments", "num"],
         ["Mean think", "num"],
         ["Tokens in", "num"],
         ["Tokens out", "num"],
@@ -352,7 +354,7 @@ function renderTableView(data, cells, models, max) {
   );
 }
 
-/** One chart per look setting, one line per run colored by model, on one y-scale. */
+/** One chart per strokes-per-assignment setting, one line per run colored by model, on one y-scale. */
 function renderCharts(data, cells, colors, models, settings, max) {
   const { refs, curve } = anchorRefs(data.anchors.blank, data.anchors.meanColor);
   const points = (p) => curve(data.curves[p.id] ?? []);
@@ -360,7 +362,7 @@ function renderCharts(data, cells, colors, models, settings, max) {
   for (const cell of cells) for (const p of cell.runs) for (const pt of points(p)) ys.push(pt.y);
   const yDomain = [Math.min(...ys), Math.max(...ys)];
   const facets = settings.map((spl) => {
-    const title = lookLabel(spl, max);
+    const title = assignmentLabel(spl, max);
     let chart = ui.charts.get(spl);
     if (!chart) {
       chart = new LineChart({
@@ -373,7 +375,7 @@ function renderCharts(data, cells, colors, models, settings, max) {
     }
     // Cells are in model order; a model's repeated runs are thin lines labeled by id.
     const series = cells
-      .filter((c) => c.strokes_per_look === spl)
+      .filter((c) => c.strokes_per_assignment === spl)
       .sort((a, b) => models.indexOf(a.models) - models.indexOf(b.models))
       .flatMap((c) =>
         c.runs.map((p) => ({
@@ -385,14 +387,14 @@ function renderCharts(data, cells, colors, models, settings, max) {
         })),
       );
     chart.setData({ series, refs, xMax: max, yDomain });
-    return el("div", { className: "facet" }, [lookTitle("h3", spl, max), chart.root]);
+    return el("div", { className: "facet" }, [assignmentTitle("h3", spl, max), chart.root]);
   });
   ui.chartsPanel.replaceChildren(
     el("h2", { textContent: "Score per stroke" }),
     el("p", {
       className: "small muted",
       textContent:
-        "One chart per look setting, one line per run, colored by model; repeated runs of a model are thin lines in its color. Dashed lines are the blank-canvas and flat-color scores.",
+        "One chart per strokes-per-assignment setting, one line per run, colored by model; repeated runs of a model are thin lines in its color. Dashed lines are the blank-canvas and flat-color scores.",
     }),
     legend(models.map((m) => ({ color: colors.get(m), label: m }))),
     el("div", { className: "facets" }, facets),
@@ -415,13 +417,15 @@ function startPanel(data, condition) {
     .filter((m) => m !== "random" && /^[A-Za-z0-9._:/@+-]{1,100}$/.test(m))
     .sort();
   const max = condition?.maxStrokes;
-  const settings = [...new Set(data.paintings.map((p) => p.strokesPerLook))].sort((a, b) => a - b);
-  const looks = settings.length ? settings.map((s) => (max && s >= max ? "all" : s)).join(",") : "1,20,all";
+  const settings = [...new Set(data.paintings.map((p) => p.strokesPerAssignment))].sort((a, b) => a - b);
+  const perAssignment = settings.length
+    ? settings.map((s) => (max && s >= max ? "all" : s)).join(",")
+    : "1,20,all";
   const command = [
     "bun run matrix --",
     `--url ${location.origin}`,
     `--models ${models.length ? models.join(",") : "<model-ids>"}`,
-    `--looks ${looks}`,
+    `--per-assignment ${perAssignment}`,
     `--style ${style}`,
     `--reference ${data.reference.id}`,
     `--size ${size}`,
@@ -441,7 +445,7 @@ function startPanel(data, condition) {
     el("p", {
       className: "small muted",
       textContent:
-        "From the repository root, the bundled painter creates one batch with a run per model and look setting, then paints them.",
+        "From the repository root, the bundled painter creates one batch with a run per model and strokes-per-assignment setting, then paints them.",
     }),
     copyField("Matrix command", command),
   ]);

@@ -1,5 +1,5 @@
-// Saves each look's thinking summaries to .matrix/thinking/<painting id>.jsonl at
-// the repository root (gitignored), one JSON line per look.
+// Saves each assignment's thinking summaries to .matrix/thinking/<painting id>.jsonl
+// at the repository root (gitignored), one JSON line per assignment.
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";

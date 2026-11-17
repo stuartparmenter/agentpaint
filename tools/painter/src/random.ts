@@ -1,6 +1,6 @@
-// Random strokes that follow a look's constraints, for testing without a model.
+// Random strokes that follow an assignment's constraints, for testing without a model.
 
-export interface LookMeta {
+export interface AssignmentMeta {
   canvas_width: number;
   canvas_height: number;
   min_brush_size?: number;
@@ -9,7 +9,7 @@ export interface LookMeta {
 
 const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
 
-export function randomStroke(meta: LookMeta) {
+export function randomStroke(meta: AssignmentMeta) {
   const maxSize = meta.max_brush_size;
   const minSize = Math.min(maxSize, meta.min_brush_size ?? Math.max(2, maxSize / 20));
   const size = rand(minSize, Math.min(maxSize, Math.max(minSize * 1.6, minSize + 10)));

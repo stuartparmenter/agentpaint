@@ -27,7 +27,7 @@ const { values: args } = parseArgs({
     model: { type: "string" },
     effort: { type: "string" },
     "thinking-budget": { type: "string", default: "8000" },
-    "max-looks": { type: "string", default: "2000" },
+    "max-assignments": { type: "string", default: "2000" },
     strokes: { type: "string", default: "10" },
     workers: { type: "string", default: "1" },
     random: { type: "boolean", default: false },
@@ -41,9 +41,10 @@ if (args.help) {
   --url              a painting's MCP URL (/mcp/p/<id>/<key>), or the pooled /mcp endpoint
                      (default $AGENTPAINT_MCP_URL or http://127.0.0.1:8787/mcp)
   --model            Claude model (default $PAINTER_MODEL or claude-opus-5-5)
-  --effort           ${EFFORTS.join(" | ")} (default $PAINTER_EFFORT or medium); sent only to models that support it
+  --effort           ${EFFORTS.join(" | ")}, sent only to models that support it (default $PAINTER_EFFORT;
+                     without either, no effort is sent and each model runs at its own default)
   --thinking-budget  extended-thinking tokens for models without adaptive thinking (default 8000)
-  --max-looks        stop a painting after this many looks (default 2000)
+  --max-assignments  stop a painting after this many assignments (default 2000)
   --random           random strokes, no Claude
   Pooled endpoint only (with AGENTPAINT_TOKEN):
   --strokes          total strokes across all workers (default 10)
@@ -53,8 +54,9 @@ if (args.help) {
 
 const url = new URL(args.url ?? process.env.AGENTPAINT_MCP_URL ?? "http://127.0.0.1:8787/mcp");
 const model = args.model ?? process.env.PAINTER_MODEL ?? "claude-opus-5-5";
-const effort = (args.effort ?? process.env.PAINTER_EFFORT ?? "medium") as Effort;
-if (!EFFORTS.includes(effort)) fail(`--effort must be one of ${EFFORTS.join(", ")}`);
+const effort = (args.effort ?? process.env.PAINTER_EFFORT ?? null) as Effort | null;
+if (effort !== null && !EFFORTS.includes(effort)) fail(`--effort must be one of ${EFFORTS.join(", ")}`);
+const effortLabel = effort ?? "default";
 const thinkingBudget = positiveInt(args["thinking-budget"], "--thinking-budget");
 
 const loopback = ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
@@ -73,7 +75,7 @@ if (scoped) {
   if (!withKey && !bearer)
     fail("this URL has no key in its path; set AGENTPAINT_TOKEN to the painting's agent key");
   console.log(
-    `Painting ${url.pathname.split("/")[3]}: ${args.random ? "random strokes" : `${model}, effort ${effort}, a new conversation per look`}, prompts ${PROMPT_HASH}`,
+    `Painting ${url.pathname.split("/")[3]}: ${args.random ? "random strokes" : `${model}, effort ${effortLabel}, a new conversation per assignment`}, prompts ${PROMPT_HASH}`,
   );
   const thoughts = thinkingLog(url.pathname.split("/")[3] as string);
   const summary = await paintScoped(anthropic, {
@@ -83,14 +85,14 @@ if (scoped) {
     model,
     effort,
     thinkingBudget,
-    maxLooks: positiveInt(args["max-looks"], "--max-looks"),
+    maxAssignments: positiveInt(args["max-assignments"], "--max-assignments"),
     log: (line) => console.log(line),
     onThinking: thoughts.write,
   });
   if (!args.random) console.log(`Thinking summaries: ${thoughts.path}`);
   console.log(
-    `Done (${summary.stopReason}): ${summary.strokes} strokes over ${summary.looks} looks, status ${summary.status}. ` +
-      `Models: ${summary.models.join(", ") || "none"}. Sent: ${summary.sent ? `effort ${summary.sent.effort ?? "none"}, thinking ${summary.sent.thinking}` : "n/a"}. ` +
+    `Done (${summary.stopReason}): ${summary.strokes} strokes over ${summary.assignments} assignments, status ${summary.status}. ` +
+      `Models: ${summary.models.join(", ") || "none"}. Sent: ${summary.sent ? `effort ${summary.sent.effort ?? "default (not sent)"}, thinking ${summary.sent.thinking}` : "n/a"}. ` +
       `Tokens: ${summary.inputTokens} in, ${summary.outputTokens} out.`,
   );
 } else {
@@ -99,7 +101,7 @@ if (scoped) {
   const strokes = positiveInt(args.strokes, "--strokes");
   const workers = positiveInt(args.workers, "--workers");
   console.log(
-    `Painting ${strokes} pool stroke(s) with ${workers} worker(s): ${args.random ? "random strokes" : `${model}, effort ${effort}`}, ${url.href}`,
+    `Painting ${strokes} pool stroke(s) with ${workers} worker(s): ${args.random ? "random strokes" : `${model}, effort ${effortLabel}`}, ${url.href}`,
   );
   const { painted, usage } = await runPool(anthropic, {
     mcpUrl: url,

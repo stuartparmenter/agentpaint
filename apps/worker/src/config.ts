@@ -65,9 +65,9 @@ export const MAX_BATCH = 50;
 export const NOTE_MAX = 280;
 
 /**
- * How long a look's token stays valid: long enough for a model to plan a large
+ * How long an assignment's token stays valid: long enough for a model to plan a large
  * batch before its first submit. Refreshed after every accepted batch.
  */
-export function lookTtlMs(strokesRemaining: number): number {
+export function assignmentTtlMs(strokesRemaining: number): number {
   return Math.min(2 * 60 * 60_000, TOKEN_TTL_MS + strokesRemaining * 30_000);
 }

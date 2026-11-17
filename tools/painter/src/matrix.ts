@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
-// Paint a model ladder: one series with a painting per model x look setting x
-// repeat, painted in parallel, then print the series' results table.
+// Paint a model ladder: one series with a painting per model x strokes per
+// assignment x repeat, painted in parallel, then print the series' results table.
 //
 //   bun src/matrix.ts --url http://127.0.0.1:8787 \
-//     --models claude-haiku-4-5,claude-sonnet-5-5,claude-opus-5-5 --looks 1,20,all \
+//     --models claude-haiku-4-5,claude-sonnet-5-5,claude-opus-5-5 --per-assignment 1,20,all \
 //     --style landscape --reference krita-sunset --size study --repeat 2 --parallel 3
 
 import { parseArgs } from "node:util";
@@ -19,7 +19,7 @@ const { values: args } = parseArgs({
   options: {
     url: { type: "string", default: "http://127.0.0.1:8787" },
     models: { type: "string", default: "claude-opus-5-5" },
-    looks: { type: "string", default: "1,20,all" },
+    "per-assignment": { type: "string", default: "1,20,all" },
     style: { type: "string", default: "landscape" },
     reference: { type: "string" },
     prompt: { type: "string" },
@@ -28,7 +28,7 @@ const { values: args } = parseArgs({
     "max-strokes": { type: "string" },
     repeat: { type: "string", default: "1" },
     parallel: { type: "string", default: "3" },
-    effort: { type: "string", default: "medium" },
+    effort: { type: "string" },
     "thinking-budget": { type: "string", default: "8000" },
     random: { type: "boolean", default: false },
     help: { type: "boolean", short: "h" },
@@ -40,7 +40,8 @@ if (args.help) {
 
   --url            site origin (default http://127.0.0.1:8787)
   --models         comma-separated model ids (ignored with --random)
-  --looks          strokes per look, comma-separated; "all" = the whole budget on one look (default 1,20,all)
+  --per-assignment strokes per assignment, comma-separated; "all" = the whole budget in one assignment
+                   (default 1,20,all)
   --style          painting style (default landscape)
   --reference      built-in reference id (e.g. krita-sunset)
   --prompt         subject text (default: none)
@@ -49,14 +50,15 @@ if (args.help) {
   --max-strokes    stroke budget (default: the style's for the size)
   --repeat         paintings per cell (default 1)
   --parallel       paintings painted at once (default 3)
-  --effort         ${EFFORTS.join(" | ")} (default medium; sent only where supported)
+  --effort         ${EFFORTS.join(" | ")}, sent only where supported (default: none sent, so each
+                   model runs at its own default effort)
   --random         random strokes instead of Claude`);
   process.exit(0);
 }
 
 const origin = args.url.replace(/\/$/, "");
-const effort = args.effort as Effort;
-if (!EFFORTS.includes(effort)) fail(`--effort must be one of ${EFFORTS.join(", ")}`);
+const effort = (args.effort ?? null) as Effort | null;
+if (effort !== null && !EFFORTS.includes(effort)) fail(`--effort must be one of ${EFFORTS.join(", ")}`);
 const repeat = positiveInt(args.repeat, "--repeat");
 const parallel = positiveInt(args.parallel, "--parallel");
 const thinkingBudget = positiveInt(args["thinking-budget"], "--thinking-budget");
@@ -70,9 +72,9 @@ const size = args.size === "full" ? "full" : "study";
 const budget = args["max-strokes"]
   ? positiveInt(args["max-strokes"], "--max-strokes")
   : style.max_strokes[size];
-const looks = args.looks.split(",").map((l) => {
+const perAssignment = args["per-assignment"].split(",").map((l) => {
   const n = l.trim() === "all" ? budget : Number(l);
-  if (!Number.isInteger(n) || n < 1) fail(`bad look setting "${l}"`);
+  if (!Number.isInteger(n) || n < 1) fail(`bad --per-assignment value "${l}"`);
   return Math.min(n, budget);
 });
 const models = args.random
@@ -84,7 +86,7 @@ const models = args.random
 
 interface Cell {
   model: string;
-  strokesPerLook: number;
+  strokesPerAssignment: number;
   rep: number;
   id?: string;
   mcpUrl?: string;
@@ -93,8 +95,8 @@ interface Cell {
   error?: string;
 }
 const cells: Cell[] = models.flatMap((model) =>
-  looks.flatMap((strokesPerLook) =>
-    Array.from({ length: repeat }, (_, rep) => ({ model, strokesPerLook, rep })),
+  perAssignment.flatMap((strokesPerAssignment) =>
+    Array.from({ length: repeat }, (_, rep) => ({ model, strokesPerAssignment, rep })),
   ),
 );
 
@@ -117,8 +119,8 @@ async function create(settings: Record<string, unknown>) {
 }
 
 console.log(
-  `Matrix: ${models.length} model(s) x ${looks.length} look setting(s) x ${repeat} = ${cells.length} paintings; ` +
-    `${args.style}, ${size}, budget ${budget}, phases ${args.phases}, prompts ${PROMPT_HASH}`,
+  `Matrix: ${models.length} model(s) x ${perAssignment.length} strokes-per-assignment setting(s) x ${repeat} = ${cells.length} paintings; ` +
+    `${args.style}, ${size}, budget ${budget}, phases ${args.phases}, effort ${effort ?? "default"}, prompts ${PROMPT_HASH}`,
 );
 
 let series: { id: string; key: string } | null = null;
@@ -129,7 +131,7 @@ for (const cell of cells) {
     reference: args.reference ?? null,
     size,
     max_strokes: budget,
-    strokes_per_look: cell.strokesPerLook,
+    strokes_per_assignment: cell.strokesPerAssignment,
     phases: args.phases,
     ...(series ? { series: series.id, series_key: series.key } : {}),
   });
@@ -152,7 +154,7 @@ await Bun.write(
       paintings: cells.map((c) => ({
         id: c.id,
         model: c.model,
-        strokes_per_look: c.strokesPerLook,
+        strokes_per_assignment: c.strokesPerAssignment,
         mcp_url: c.mcpUrl,
         owner_key: c.ownerKey,
       })),
@@ -168,7 +170,7 @@ const queue = [...cells];
 await Promise.all(
   Array.from({ length: Math.min(parallel, queue.length) }, async () => {
     for (let cell = queue.shift(); cell; cell = queue.shift()) {
-      const tag = `[${cell.model} ${cell.strokesPerLook}/look #${cell.rep + 1} ${cell.id}]`;
+      const tag = `[${cell.model} ${cell.strokesPerAssignment}/assignment #${cell.rep + 1} ${cell.id}]`;
       try {
         cell.summary = await paintScoped(anthropic, {
           mcpUrl: new URL(cell.mcpUrl as string),
@@ -176,7 +178,7 @@ await Promise.all(
           model: cell.model,
           effort,
           thinkingBudget,
-          maxLooks: budget + 10,
+          maxAssignments: budget + 10,
           log: (line) => console.log(`${tag} ${line}`),
           onThinking: thinkingLog(cell.id as string).write,
         });
@@ -203,22 +205,22 @@ const similarity = (raw: unknown) =>
   typeof raw === "number" && blank !== null ? fmt((raw - blank) / (1 - blank), 2) : "—";
 const rows = result.table.map((c) => [
   String(c.models),
-  String(c.strokes_per_look),
+  String(c.strokes_per_assignment),
   `${c.finished}/${c.paintings}`,
   similarity(c.final_score),
   fmt(c.strokes_used, 1),
-  fmt(c.looks, 1),
+  fmt(c.assignments, 1),
   typeof c.mean_think_ms === "number" ? `${(c.mean_think_ms / 1000).toFixed(1)}s` : "—",
   fmt(c.tokens_in, 0),
   fmt(c.tokens_out, 0),
 ]);
 const header = [
   "models",
-  "strokes/look",
+  "strokes/assignment",
   "finished",
   "final score",
   "strokes",
-  "looks",
+  "assignments",
   "think/stroke",
   "tokens in",
   "tokens out",
@@ -236,7 +238,7 @@ if (blank !== null) {
 const sent = cells.find((c) => c.summary?.sent)?.summary?.sent;
 for (const model of models) {
   const s = cells.find((c) => c.model === model && c.summary?.sent)?.summary?.sent;
-  if (s) console.log(`${model}: sent effort ${s.effort ?? "none"}, thinking ${s.thinking}`);
+  if (s) console.log(`${model}: sent effort ${s.effort ?? "default (not sent)"}, thinking ${s.thinking}`);
 }
 if (!sent && !args.random) console.log("(no request parameters recorded)");
 const failed = cells.filter((c) => c.error);

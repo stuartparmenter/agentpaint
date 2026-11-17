@@ -7,7 +7,7 @@ import { type Effort, paramsFor, requestFields } from "./capabilities";
 import { callTool, connect, firstJson, type McpContent } from "./mcp";
 import { claudeTools, inputTokens, type McpTool, toToolContent } from "./paint";
 import { POOL_SYSTEM_PROMPT, POOL_TURN } from "./prompt";
-import { type LookMeta, randomStroke } from "./random";
+import { type AssignmentMeta, randomStroke } from "./random";
 
 export interface PoolOptions {
   mcpUrl: URL;
@@ -16,7 +16,8 @@ export interface PoolOptions {
   workers: number;
   random: boolean;
   model: string;
-  effort: Effort;
+  /** Null sends no effort, so the model runs at its default. */
+  effort: Effort | null;
   thinkingBudget: number;
 }
 
@@ -71,7 +72,7 @@ export async function runPool(anthropic: Anthropic | null, opts: PoolOptions) {
     const assignment = await callTool(mcp, "get_assignment", {}, log);
     const meta = firstJson(assignment.content as McpContent[]);
     if (meta.available === false) return "busy";
-    const { note: _note, ...stroke_data } = randomStroke(meta as LookMeta);
+    const { note: _note, ...stroke_data } = randomStroke(meta as AssignmentMeta);
     const result = await callTool(mcp, "submit_stroke", { token: meta.token, stroke_data }, log);
     const parsed = firstJson(result.content as McpContent[]);
     console.log(

@@ -1,8 +1,8 @@
 import {
+  assignmentBadge,
   el,
   getJson,
   loadReferences,
-  lookBadge,
   playback,
   poll,
   snapshotUrl,
@@ -73,7 +73,7 @@ function updateCard(p, s) {
   // Status can change without a new stroke (done → archived), so badges always refresh.
   badges.replaceChildren(
     ...(p.reference ? [testBadge(p.reference)] : []),
-    ...(p.kind === "created" ? [lookBadge(p)] : []),
+    ...(p.kind === "created" ? [assignmentBadge(p)] : []),
     statusBadge(p.status),
   );
   const followingLatest = s.viewing === s.strokeCount;
@@ -87,7 +87,7 @@ function updateCard(p, s) {
 function testBadge(reference) {
   const title = referenceTitles.get(reference) ?? reference;
   return el("a", {
-    className: "badge look",
+    className: "badge test",
     href: `/tests/${encodeURIComponent(reference)}`,
     textContent: `Test: ${title.split(",")[0]}`,
     title: `Reference test: ${title}`,

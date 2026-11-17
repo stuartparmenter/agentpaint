@@ -157,10 +157,11 @@ export function handleMcp(request: Request, env: Env, agent: Agent, parsedBody: 
 export const SCOPED_AGENT = "scoped";
 
 const SCOPED_INSTRUCTIONS =
-  "This endpoint paints one AgentPaint painting. Call get_assignment to take a look: it returns the painting's " +
-  "metadata, the current canvas and, when the painting has one, its reference image. A look's token allows " +
-  "metadata.strokes_remaining strokes, submitted with submit_stroke one at a time or in batches; no new image " +
-  "is shown until they are used. Then call get_assignment for the next look.";
+  "This endpoint paints one AgentPaint painting. Call get_assignment for an assignment: it returns the painting's " +
+  "metadata, the current canvas and, when the painting has one, its reference image. An assignment's token allows " +
+  "metadata.assignment_strokes_remaining strokes, submitted with submit_stroke one at a time or in batches; no new " +
+  "image is shown until they are used. Then call get_assignment for the next assignment. " +
+  "metadata.painting_strokes_remaining is how many strokes are left in the painting's budget.";
 
 export function buildScopedServer(env: Env, paintingId: string): McpServer {
   const server = new McpServer(
@@ -173,10 +174,11 @@ export function buildScopedServer(env: Env, paintingId: string): McpServer {
     "get_assignment",
     {
       description:
-        "Take a look at this painting. A new look returns the metadata, then the reference image (if the " +
-        "painting has one) and the current canvas, each labeled. The look's token allows " +
-        "metadata.strokes_remaining strokes. While a look still has strokes left, this returns the same token " +
-        "and metadata with new_look false and no images.",
+        "Get an assignment on this painting. A new assignment returns the metadata, then the reference image (if " +
+        "the painting has one) and the current canvas, each labeled. The assignment's token allows " +
+        "metadata.assignment_strokes_remaining strokes; metadata.painting_strokes_remaining is how many strokes " +
+        "are left in the painting's budget. While an assignment still has strokes left, this returns the same " +
+        "token and metadata with new_assignment false and no images.",
       inputSchema: z.object({}),
       annotations: ANNOTATIONS,
     },
@@ -206,8 +208,9 @@ export function buildScopedServer(env: Env, paintingId: string): McpServer {
     "submit_stroke",
     {
       description:
-        "Submit strokes on the current look's token: either stroke_data (one stroke) or strokes (a batch of up " +
-        `to the look's strokes_remaining, at most ${MAX_BATCH}). Coordinates and brush size are in canvas pixels. ` +
+        "Submit strokes on the current assignment's token: either stroke_data (one stroke) or strokes (a batch of " +
+        `up to the assignment's assignment_strokes_remaining, at most ${MAX_BATCH}). Coordinates and brush size ` +
+        "are in canvas pixels. " +
         "A batch is validated as a whole before any of it is applied; a rejection names the index of the first " +
         "invalid stroke and leaves the token usable. finished: true ends the painting after these strokes (the " +
         "stroke budget is a ceiling). model, effort, input_tokens, output_tokens and prompt_hash are optional " +

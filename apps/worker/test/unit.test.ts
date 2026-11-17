@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { authenticate, bearer, parseTokens } from "../src/auth";
-import { envNumber, lookTtlMs } from "../src/config";
+import { assignmentTtlMs, envNumber } from "../src/config";
 import { makeToken, PAINTING_ID, parseToken, randomId } from "../src/ids";
 import { canvasSize, findReference, REFERENCES } from "../src/references";
 import { seriesTable } from "../src/series";
@@ -120,9 +120,9 @@ describe("stroke", () => {
 describe("created paintings", () => {
   test("settings default sensibly and reject bad values", () => {
     const parsed = createInput.parse({ style: "landscape" });
-    expect(parsed).toMatchObject({ size: "full", strokes_per_look: 1, phases: "off" });
+    expect(parsed).toMatchObject({ size: "full", strokes_per_assignment: 1, phases: "off" });
     expect(createInput.safeParse({ style: "watercolor" }).success).toBe(false);
-    expect(createInput.safeParse({ style: "landscape", strokes_per_look: 0 }).success).toBe(false);
+    expect(createInput.safeParse({ style: "landscape", strokes_per_assignment: 0 }).success).toBe(false);
     expect(createInput.safeParse({ style: "landscape", max_strokes: 5000 }).success).toBe(false);
     expect(createInput.safeParse({ style: "landscape", series: "../x" }).success).toBe(false);
     expect(studyBudget(1000)).toBe(250);
@@ -143,9 +143,9 @@ describe("created paintings", () => {
     expect(scaledMinBrush(1, 512)).toBe(1);
   });
 
-  test("a look's token lives longer for larger allowances, up to two hours", () => {
-    expect(lookTtlMs(1)).toBe(10 * 60_000 + 30_000);
-    expect(lookTtlMs(250)).toBe(2 * 60 * 60_000);
+  test("an assignment's token lives longer for larger allowances, up to two hours", () => {
+    expect(assignmentTtlMs(1)).toBe(10 * 60_000 + 30_000);
+    expect(assignmentTtlMs(250)).toBe(2 * 60 * 60_000);
   });
 
   test("phases follow the painting's own budget", () => {
@@ -153,7 +153,7 @@ describe("created paintings", () => {
     expect(currentPhase(STYLES.landscape, 30).name).toBe("foundation");
   });
 
-  test("the series table groups by models and look setting and averages repeats", () => {
+  test("the series table groups by models and strokes per assignment and averages repeats", () => {
     const base = {
       kind: "created",
       status: "done",
@@ -177,10 +177,10 @@ describe("created paintings", () => {
         ...base,
         id,
         models,
-        strokesPerLook: spl,
+        strokesPerAssignment: spl,
         lastScore: score,
         strokeCount: strokes,
-        looks: Math.ceil(strokes / spl),
+        assignments: Math.ceil(strokes / spl),
         meanThinkMs: think,
         tokensIn: 100,
         tokensOut: 10,
@@ -191,12 +191,12 @@ describe("created paintings", () => {
       p("c", ["m1"], 250, 0.85, 200, 5000),
       p("d", [], 1, 0.7, 250, 10),
     ]);
-    expect(table.map((c) => [c.models, c.strokes_per_look, c.painting_ids])).toEqual([
+    expect(table.map((c) => [c.models, c.strokes_per_assignment, c.painting_ids])).toEqual([
       ["(not reported)", 1, ["d"]],
       ["m1", 1, ["a", "b"]],
       ["m1", 250, ["c"]],
     ]);
-    const m1 = table.find((c) => c.models === "m1" && c.strokes_per_look === 1);
+    const m1 = table.find((c) => c.models === "m1" && c.strokes_per_assignment === 1);
     expect(m1?.final_score).toBeCloseTo(0.85);
     expect(m1?.mean_think_ms).toBe(2000);
   });
@@ -219,13 +219,13 @@ describe("reference tests", () => {
       finishedAt: null,
       seriesId: "s1",
       size: "study",
-      strokesPerLook: 1,
+      strokesPerAssignment: 1,
       phases: "off",
       reference: "krita-sunset",
       blankScore: 0.75,
       meanColorScore: 0.88,
       lastScore: null,
-      looks: 0,
+      assignments: 0,
       meanThinkMs: null,
       tokensIn: 0,
       tokensOut: 0,

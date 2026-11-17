@@ -200,7 +200,8 @@ h3 {
 .badge.expired {
   color: var(--expired);
 }
-.badge.look {
+.badge.assignment,
+.badge.test {
   color: var(--muted);
   text-transform: none;
   letter-spacing: 0;

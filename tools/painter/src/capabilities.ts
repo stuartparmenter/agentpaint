@@ -13,7 +13,7 @@ export interface ModelParams {
   thinking?:
     | { type: "adaptive"; display: "summarized" }
     | { type: "enabled"; budget_tokens: number; display: "summarized" };
-  /** What was sent, for the record (and reported with each stroke). */
+  /** What was sent, for the record (and reported with each stroke); effort null means none was sent. */
   sent: { effort: Effort | null; thinking: string };
 }
 
@@ -27,11 +27,12 @@ const cache = new Map<string, Promise<ModelParams>>();
 
 /**
  * Parameters for `model` at `effort`. Adaptive thinking where supported, else
- * extended thinking with `thinkingBudget` tokens where supported; effort only
- * where the model supports that level. Unknown capabilities send neither.
+ * extended thinking with `thinkingBudget` tokens where supported. Effort is sent
+ * only when one is given and the model supports that level; otherwise the model
+ * runs at its default effort. Unknown capabilities send neither.
  */
-export function paramsFor(client: Anthropic, model: string, effort: Effort, thinkingBudget: number) {
-  const key = `${model}:${effort}:${thinkingBudget}`;
+export function paramsFor(client: Anthropic, model: string, effort: Effort | null, thinkingBudget: number) {
+  const key = `${model}:${effort ?? "default"}:${thinkingBudget}`;
   let entry = cache.get(key);
   if (!entry) {
     entry = resolve(client, model, effort, thinkingBudget);
@@ -40,7 +41,7 @@ export function paramsFor(client: Anthropic, model: string, effort: Effort, thin
   return entry;
 }
 
-async function resolve(client: Anthropic, model: string, effort: Effort, thinkingBudget: number) {
+async function resolve(client: Anthropic, model: string, effort: Effort | null, thinkingBudget: number) {
   let caps: Capabilities = {};
   let maxOutput = 16000;
   try {
@@ -53,7 +54,7 @@ async function resolve(client: Anthropic, model: string, effort: Effort, thinkin
     );
   }
   const params: ModelParams = { model, max_tokens: maxOutput, sent: { effort: null, thinking: "default" } };
-  if (caps.effort?.supported && caps.effort[effort]?.supported) {
+  if (effort && caps.effort?.supported && caps.effort[effort]?.supported) {
     params.output_config = { effort };
     params.sent.effort = effort;
   }

@@ -87,8 +87,8 @@ export async function createPainting(
   const maxStrokes =
     input.max_strokes ?? (size === "study" ? studyBudget(style.maxStrokes) : style.maxStrokes);
 
-  if (input.strokes_per_look > maxStrokes) {
-    return { status: 400, error: `strokes_per_look must be at most max_strokes (${maxStrokes})` };
+  if (input.strokes_per_assignment > maxStrokes) {
+    return { status: 400, error: `strokes_per_assignment must be at most max_strokes (${maxStrokes})` };
   }
 
   let ref: PreparedReference | null = null;
@@ -108,7 +108,7 @@ export async function createPainting(
     width,
     height,
     maxStrokes,
-    strokesPerLook: input.strokes_per_look,
+    strokesPerAssignment: input.strokes_per_assignment,
     phases: input.phases,
     reference: reference?.id ?? null,
     blankScore: ref?.blankScore ?? null,

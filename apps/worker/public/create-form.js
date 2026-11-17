@@ -1,12 +1,12 @@
 // The create form. On the home page it asks for a style and prompt, with the
-// stroke budget and look setting under "More options". On a reference test
+// stroke budget and strokes per assignment under "More options". On a reference test
 // page it fixes the reference and prefills the test's condition.
 
 import { el, getJson, paintingKey, saveJson } from "./common.js";
 
 const PHASES = ["off", "guidance", "enforced"];
-const LOOK_HELP =
-  "A look is the agent seeing the canvas. 1 = it looks before every stroke; 5 = it places 5 strokes, then looks again; equal to max strokes = it looks once at the start and paints everything without seeing the canvas again.";
+const ASSIGNMENT_HELP =
+  "Each assignment shows the agent the canvas and allows this many strokes; it sees the result at the next assignment. 1 = it sees the canvas before every stroke; equal to max strokes = it sees the canvas once, at the start.";
 
 let counter = 0;
 
@@ -51,7 +51,7 @@ function numberInput(name, value, placeholder) {
 /**
  * Builds the form.
  * @param {object} [options]
- * @param {object} [options.prefill] {style, prompt, max_strokes, strokes_per_look}
+ * @param {object} [options.prefill] {style, prompt, max_strokes, strokes_per_assignment}
  * @param {object} [options.test] {reference, style, size, max_strokes, phases}: test mode
  */
 export function createForm({ prefill = {}, test = null } = {}) {
@@ -67,8 +67,8 @@ export function createForm({ prefill = {}, test = null } = {}) {
   const size = select("size", ["study", "full"], test?.size);
   const phases = select("phases", PHASES, test?.phases);
   const maxStrokes = numberInput("max_strokes", test?.max_strokes ?? prefill.max_strokes, "Style default");
-  const perLook = numberInput("strokes_per_look", prefill.strokes_per_look ?? 1);
-  perLook.required = true;
+  const perAssignment = numberInput("strokes_per_assignment", prefill.strokes_per_assignment ?? 1);
+  perAssignment.required = true;
 
   // The max strokes placeholder shows the budget the API applies when it's empty.
   async function syncBudget() {
@@ -88,11 +88,11 @@ export function createForm({ prefill = {}, test = null } = {}) {
     syncBudget();
   });
 
-  const lookField = field("Strokes per look", perLook, LOOK_HELP);
-  const moreOpen = Boolean(prefill.max_strokes || Number(prefill.strokes_per_look) > 1);
+  const assignmentField = field("Strokes per assignment", perAssignment, ASSIGNMENT_HELP);
+  const moreOpen = Boolean(prefill.max_strokes || Number(prefill.strokes_per_assignment) > 1);
   const fields = test
     ? [
-        lookField,
+        assignmentField,
         el("details", { className: "more" }, [
           el("summary", { textContent: "Change settings" }),
           el("div", { className: "more-body" }, [
@@ -107,7 +107,7 @@ export function createForm({ prefill = {}, test = null } = {}) {
         field("Prompt (optional)", prompt),
         el("details", { className: "more", open: moreOpen }, [
           el("summary", { textContent: "More options" }),
-          el("div", { className: "more-body" }, [field("Max strokes", maxStrokes), lookField]),
+          el("div", { className: "more-body" }, [field("Max strokes", maxStrokes), assignmentField]),
         ]),
       ];
 
@@ -141,17 +141,17 @@ export function createForm({ prefill = {}, test = null } = {}) {
     if (test) Object.assign(body, { reference: test.reference, size: size.value, phases: phases.value });
     else body.prompt = prompt.value.trim() || null;
     if (maxStrokes.value) body.max_strokes = Number(maxStrokes.value);
-    const spl = Number(perLook.value);
+    const spl = Number(perAssignment.value);
     const budget = body.max_strokes ?? (await syncBudget());
     if (!Number.isInteger(spl) || spl < 1) {
-      showError("Strokes per look must be a whole number of at least 1.");
-      return perLook.focus();
+      showError("Strokes per assignment must be a whole number of at least 1.");
+      return perAssignment.focus();
     }
     if (budget && spl > budget) {
-      showError(`Strokes per look can't be more than max strokes (${budget}).`);
-      return perLook.focus();
+      showError(`Strokes per assignment can't be more than max strokes (${budget}).`);
+      return perAssignment.focus();
     }
-    body.strokes_per_look = spl;
+    body.strokes_per_assignment = spl;
 
     submit.disabled = true;
     submit.textContent = "Creating…";
@@ -180,7 +180,7 @@ export function createForm({ prefill = {}, test = null } = {}) {
   return form;
 }
 
-const QUERY_KEYS = ["style", "prompt", "max_strokes", "strokes_per_look"];
+const QUERY_KEYS = ["style", "prompt", "max_strokes", "strokes_per_assignment"];
 
 /** Prefill from `?style=…&prompt=…` on the home page, or null without one. */
 export function prefillFromQuery(search) {
@@ -197,7 +197,7 @@ export function prefillQuery(p) {
     style: p.style,
     prompt: p.prompt,
     max_strokes: p.maxStrokes,
-    strokes_per_look: p.strokesPerLook,
+    strokes_per_assignment: p.strokesPerAssignment,
   };
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(values)) if (v !== null && v !== undefined && v !== "") q.set(k, v);

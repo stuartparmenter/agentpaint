@@ -7,7 +7,7 @@
 //   bun tooling/replay-check.ts --painting <id> --owner-key <key> [--url http://127.0.0.1:8787]
 //
 // Pool paintings (after restarting `wrangler dev`, so the canvas is rebuilt):
-// takes a look and compares the live canvas with the stored snapshot.
+// gets an assignment and compares the live canvas with the stored snapshot.
 //   AGENTPAINT_URL=http://127.0.0.1:8787 AGENTPAINT_TOKEN=... bun tooling/replay-check.ts
 
 import { parseArgs } from "node:util";

@@ -25,14 +25,14 @@ export interface PaintingSummary {
   /** Created paintings only (pool paintings: null / their fixed defaults). */
   seriesId: string | null;
   size: SizeName | null;
-  strokesPerLook: number;
+  strokesPerAssignment: number;
   phases: PhaseMode;
   reference: string | null;
   blankScore: number | null;
   meanColorScore: number | null;
   /** Running results, maintained by the painting after each stroke. */
   lastScore: number | null;
-  looks: number;
+  assignments: number;
   meanThinkMs: number | null;
   tokensIn: number;
   tokensOut: number;
@@ -48,7 +48,7 @@ export interface CreateSettings {
   width: number;
   height: number;
   maxStrokes: number;
-  strokesPerLook: number;
+  strokesPerAssignment: number;
   phases: PhaseMode;
   reference: string | null;
   blankScore: number | null;
@@ -61,7 +61,7 @@ export interface PaintingStats {
   status: PaintingStatus;
   at: number;
   lastScore?: number | null;
-  looks?: number;
+  assignments?: number;
   meanThinkMs?: number | null;
   tokensIn?: number;
   tokensOut?: number;

@@ -136,7 +136,7 @@
   display: block;
   margin: 0;
 }
-/* Look ticks sit under the slider; the inset matches the thumb's travel. */
+/* Assignment ticks sit under the slider; the inset matches the thumb's travel. */
 .ticks {
   position: absolute;
   left: 8px;

@@ -4,6 +4,8 @@
 import { LineChart } from "./chart.js";
 import {
   anchorRefs,
+  assignmentBadge,
+  assignmentTitle,
   attribution,
   copyField,
   el,
@@ -16,8 +18,6 @@ import {
   idFromPath,
   loadJson,
   loadReferences,
-  lookBadge,
-  lookTitle,
   paintingKey,
   playback,
   poll,
@@ -143,7 +143,7 @@ function build() {
   ui.tickNote = el("p", {
     className: "small muted",
     textContent:
-      "Ticks under the slider mark each look: the canvas the agent saw before its next batch of strokes.",
+      "Ticks under the slider mark each assignment: the canvas the agent saw before its next batch of strokes.",
     hidden: true,
   });
 
@@ -225,15 +225,15 @@ function update(strokesChanged = true) {
 function renderSettings() {
   const p = state.painting;
   ui.title.textContent = p.prompt ?? "Open subject";
-  ui.badges.replaceChildren(statusBadge(p.status), lookBadge(p));
+  ui.badges.replaceChildren(statusBadge(p.status), assignmentBadge(p));
   const rows = [
     ["Style", p.style],
     ["Prompt", p.prompt ?? "Open subject (none given)"],
     ["Size", `${p.size ?? "pool"} · ${p.width}×${p.height}`],
-    ["Look setting", lookTitle("span", p.strokesPerLook, p.maxStrokes)],
+    ["Strokes per assignment", assignmentTitle("span", p.strokesPerAssignment, p.maxStrokes)],
     ["Phases", p.phases],
     ["Budget", `${p.strokeCount} of ${p.maxStrokes} strokes used`],
-    ["Looks", fmtInt(p.looks)],
+    ["Assignments", fmtInt(p.assignments)],
     ["Status", p.status],
     ["Models seen", p.models.length ? p.models.join(", ") : "not reported"],
     ["Mean think time", fmtSeconds(p.meanThinkMs)],
@@ -248,25 +248,25 @@ function renderSettings() {
   ui.settings.replaceChildren(...nodes);
 }
 
-/** Canvas versions the agent looked at before each new look: the stroke before the look's first stroke. */
-function lookPositions() {
+/** Canvas versions the agent saw at each new assignment: the stroke before the assignment's first stroke. */
+function assignmentPositions() {
   const out = [];
   let prev = null;
   for (const s of state.strokes) {
-    if (s.look !== prev) out.push(s.version - 1);
-    prev = s.look;
+    if (s.assignment !== prev) out.push(s.version - 1);
+    prev = s.assignment;
   }
   return out;
 }
 
-function showLookMarks() {
-  const looks = lookPositions();
-  return looks.length > 1 && looks.length < state.strokes.length && looks.length <= 400 ? looks : [];
+function showAssignmentMarks() {
+  const starts = assignmentPositions();
+  return starts.length > 1 && starts.length < state.strokes.length && starts.length <= 400 ? starts : [];
 }
 
 function renderTicks() {
   const max = Math.max(1, state.painting.strokeCount);
-  const marks = showLookMarks();
+  const marks = showAssignmentMarks();
   ui.ticks.replaceChildren(
     ...marks.map((v) => {
       const tick = el("span", { className: "tick" });
@@ -283,7 +283,7 @@ function renderChart() {
   const p = state.painting;
   const { refs, curve } = anchorRefs(p.blankScore, p.meanColorScore);
   const points = curve(state.strokes.filter((s) => s.score !== null).map((s) => [s.version, s.score]));
-  const marks = showLookMarks();
+  const marks = showAssignmentMarks();
   ui.chart.setData({
     series: [{ id: p.id, label: "score", color: 1, points }],
     refs,
@@ -292,7 +292,7 @@ function renderChart() {
     marker: state.viewing,
   });
   ui.chartCaption.textContent = marks.length
-    ? "Vertical hairlines mark each look: the canvas the agent saw before its next batch of strokes."
+    ? "Vertical hairlines mark each assignment: the canvas the agent saw before its next batch of strokes."
     : "";
   ui.chartCaption.hidden = !marks.length;
 }
@@ -304,7 +304,7 @@ function tooltipExtra(x) {
   const parts = [
     el("div", {
       className: "chart-tooltip-label",
-      textContent: `Look ${s.look} · ${fmtSeconds(s.think_ms)}`,
+      textContent: `Assignment ${s.assignment} · ${fmtSeconds(s.think_ms)}`,
     }),
   ];
   if (s.note) parts.push(el("div", { className: "chart-tooltip-note", textContent: s.note }));
@@ -313,7 +313,7 @@ function tooltipExtra(x) {
 
 const LOG_HEAD = [
   ["Stroke", "num"],
-  ["Look", "num"],
+  ["Assignment", "num"],
   ["Think", "num"],
   ["Score", "num"],
   ["Note", ""],
@@ -335,7 +335,7 @@ function renderLog() {
     });
     const tr = el("tr", {}, [
       el("td", { className: "num" }, [button]),
-      el("td", { className: "num", textContent: String(s.look) }),
+      el("td", { className: "num", textContent: String(s.assignment) }),
       el("td", { className: "num", textContent: fmtSeconds(s.think_ms) }),
       el("td", { className: "num", textContent: fmtScore(s.score, state.painting.blankScore) }),
       el("td", { className: "note", textContent: s.note ?? "" }),
@@ -375,7 +375,7 @@ function show(v) {
     if (p.blankScore !== null) parts.push(["Score", fmtScore(p.blankScore, p.blankScore)]);
   } else if (s) {
     parts.push(["Stroke", `${s.version} of ${p.strokeCount}`]);
-    parts.push(["Look", String(s.look)]);
+    parts.push(["Assignment", String(s.assignment)]);
     parts.push(["Think", fmtSeconds(s.think_ms)]);
     if (s.score !== null) parts.push(["Score", fmtScore(s.score, p.blankScore)]);
     if (s.model) parts.push(["Model", s.effort ? `${s.model} (${s.effort})` : s.model]);

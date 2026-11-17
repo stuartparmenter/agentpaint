@@ -271,14 +271,14 @@ function studyStroke(x: number, y: number, note?: string) {
 
 const bad = await create({ style: "landscape", reference: "no-such-reference" });
 check("creation rejects an unknown reference", bad.status === 400, bad);
-const tooBig = await create({ style: "landscape", size: "study", strokes_per_look: 9999 });
-check("creation rejects strokes_per_look above the budget", tooBig.status === 400, tooBig.status);
+const tooBig = await create({ style: "landscape", size: "study", strokes_per_assignment: 9999 });
+check("creation rejects strokes_per_assignment above the budget", tooBig.status === 400, tooBig.status);
 
 const made = await create({
   style: "landscape",
   reference: "krita-sunset",
   size: "study",
-  strokes_per_look: 3,
+  strokes_per_assignment: 3,
   prompt: "e2e",
 });
 const p = made.body;
@@ -310,27 +310,29 @@ const poolKeyOnScoped = await fetch(`${base}/mcp/p/${p.id}`, {
 check("a pool token doesn't open a scoped endpoint", poolKeyOnScoped.status === 401, poolKeyOnScoped.status);
 
 const scopedClient = await connect(new URL(p.mcp_url));
-const look1 = await scopedCall(scopedClient, "get_assignment");
-const kinds = look1.content.map((c) =>
+const assignment1 = await scopedCall(scopedClient, "get_assignment");
+const kinds = assignment1.content.map((c) =>
   c.type === "text" ? (c.text?.startsWith("{") ? "meta" : c.text) : c.type,
 );
 check(
-  "a new look shows the labeled reference and canvas",
+  "a new assignment shows the labeled reference and canvas",
   JSON.stringify(kinds) === JSON.stringify(["meta", "Reference image:", "image", "Current canvas:", "image"]),
   kinds,
 );
-const m1 = look1.json;
+const m1 = assignment1.json;
 check(
-  "look metadata reports the allowance and omits phase fields when phases are off",
-  m1.strokes_remaining === 3 &&
-    m1.new_look === true &&
-    m1.look === 1 &&
+  "assignment metadata reports both counts and omits phase fields when phases are off",
+  m1.assignment_strokes_remaining === 3 &&
+    m1.painting_strokes_remaining === m1.max_strokes &&
+    m1.max_strokes > 3 &&
+    m1.new_assignment === true &&
+    m1.assignment === 1 &&
     !("phase" in m1) &&
     !("min_brush_size" in m1),
   m1,
 );
-check("look metadata names the painting", m1.painting_id === p.id, m1.painting_id);
-const canvasImage = look1.content.filter((c) => c.type === "image")[1];
+check("assignment metadata names the painting", m1.painting_id === p.id, m1.painting_id);
+const canvasImage = assignment1.content.filter((c) => c.type === "image")[1];
 const canvasSize = canvasImage?.data ? jpegSize(canvasImage.data) : undefined;
 check(
   "the canvas image has the painting's size",
@@ -338,13 +340,13 @@ check(
   canvasSize,
 );
 
-const sameLook = await scopedCall(scopedClient, "get_assignment");
+const sameAssignment = await scopedCall(scopedClient, "get_assignment");
 check(
-  "while a look has strokes left, get_assignment returns the same token without images",
-  sameLook.json?.token === m1.token &&
-    sameLook.json?.new_look === false &&
-    sameLook.content.every((c) => c.type === "text"),
-  sameLook.json,
+  "while an assignment has strokes left, get_assignment returns the same token without images",
+  sameAssignment.json?.token === m1.token &&
+    sameAssignment.json?.new_assignment === false &&
+    sameAssignment.content.every((c) => c.type === "text"),
+  sameAssignment.json,
 );
 
 const halfBad = await scopedCall(scopedClient, "submit_stroke", {
@@ -373,7 +375,7 @@ const overSize = await scopedCall(scopedClient, "submit_stroke", {
   },
 });
 check(
-  "a brush above the look's max_brush_size is rejected",
+  "a brush above the assignment's max_brush_size is rejected",
   overSize.json?.reason === "invalid_stroke",
   overSize.json,
 );
@@ -394,10 +396,11 @@ const applied2 = await scopedCall(scopedClient, "submit_stroke", {
   prompt_hash: "abc123",
 });
 check(
-  "a valid batch (one stroke at max_brush_size) applies and reports what's left",
+  "a valid batch (one stroke at max_brush_size) applies and reports what's left in the assignment and the painting",
   applied2.json?.applied === true &&
     applied2.json?.applied_count === 2 &&
-    applied2.json?.strokes_remaining === 1,
+    applied2.json?.assignment_strokes_remaining === 1 &&
+    applied2.json?.painting_strokes_remaining === m1.max_strokes - 2,
   applied2.json,
 );
 const overAllowance = await scopedCall(scopedClient, "submit_stroke", {
@@ -405,7 +408,7 @@ const overAllowance = await scopedCall(scopedClient, "submit_stroke", {
   strokes: [studyStroke(60, 160), studyStroke(60, 200)],
 });
 check(
-  "a batch can't exceed the look's allowance",
+  "a batch can't exceed the assignment's allowance",
   overAllowance.json?.reason === "too_many_strokes",
   overAllowance.json,
 );
@@ -415,27 +418,29 @@ const last = await scopedCall(scopedClient, "submit_stroke", {
   note: "water",
 });
 check(
-  "the last stroke of a look uses it up",
-  last.json?.applied === true && last.json?.strokes_remaining === 0,
+  "the last stroke of an assignment uses it up",
+  last.json?.applied === true && last.json?.assignment_strokes_remaining === 0,
   last.json,
 );
 const used = await scopedCall(scopedClient, "submit_stroke", {
   token: m1.token,
   stroke_data: studyStroke(60, 200),
 });
-check("a used-up look's token paints no more", used.json?.reason === "token_used", used.json);
+check("a used-up assignment's token paints no more", used.json?.reason === "token_used", used.json);
 
-const look2 = await scopedCall(scopedClient, "get_assignment");
+const assignment2 = await scopedCall(scopedClient, "get_assignment");
 check(
-  "the next look is a fresh look with images",
-  look2.json?.new_look === true &&
-    look2.json?.token !== m1.token &&
-    look2.json?.look === 2 &&
-    look2.content.some((c) => c.type === "image"),
-  look2.json,
+  "the next assignment is a new one with images, a fresh allowance and the painting's remaining budget",
+  assignment2.json?.new_assignment === true &&
+    assignment2.json?.token !== m1.token &&
+    assignment2.json?.assignment === 2 &&
+    assignment2.json?.assignment_strokes_remaining === 3 &&
+    assignment2.json?.painting_strokes_remaining === m1.max_strokes - 3 &&
+    assignment2.content.some((c) => c.type === "image"),
+  assignment2.json,
 );
 const finish = await scopedCall(scopedClient, "submit_stroke", {
-  token: look2.json.token,
+  token: assignment2.json.token,
   stroke_data: studyStroke(200, 200),
   finished: true,
 });
@@ -445,15 +450,20 @@ check(
   finish.json,
 );
 const afterFinish = await scopedCall(scopedClient, "get_assignment");
-check("a finished painting hands out no looks", afterFinish.json?.available === false, afterFinish.json);
+check(
+  "a finished painting hands out no assignments",
+  afterFinish.json?.available === false,
+  afterFinish.json,
+);
 await scopedClient.close();
 
 const log = (await (await fetch(`${base}/api/paintings/${p.id}/strokes`)).json()) as Json[];
 check("the stroke log has every applied stroke", log.length === 4, log.length);
 check(
-  "the log records looks, notes, think time and scores",
-  log[0]?.look === 1 &&
-    log[3]?.look === 2 &&
+  "the log records assignments, notes, think time and scores",
+  log[0]?.assignment === 1 &&
+    log[2]?.assignment === 1 &&
+    log[3]?.assignment === 2 &&
     log[0]?.note === "sky band" &&
     log[2]?.note === "water" &&
     log.every((s) => typeof s.think_ms === "number" && s.think_ms >= 0 && typeof s.score === "number"),
@@ -508,7 +518,7 @@ const sibling = await create({
   style: "landscape",
   reference: "krita-sunset",
   size: "study",
-  strokes_per_look: 250,
+  strokes_per_assignment: 250,
   phases: "enforced",
   series: p.series_id,
   series_key: p.series_key,
@@ -519,13 +529,13 @@ check(
   sibling.body.series_id,
 );
 const sib = await connect(new URL(`${base}/mcp/p/${sibling.body.id}`), sibling.body.agent_key);
-const sibLook = await scopedCall(sib, "get_assignment");
+const sibAssignment = await scopedCall(sib, "get_assignment");
 check(
   "enforced phases send the brush floor, scaled to the canvas",
-  sibLook.json?.min_brush_size === 60 &&
-    typeof sibLook.json?.phase === "string" &&
-    sibLook.json?.strokes_remaining === 250,
-  sibLook.json,
+  sibAssignment.json?.min_brush_size === 60 &&
+    typeof sibAssignment.json?.phase === "string" &&
+    sibAssignment.json?.assignment_strokes_remaining === 250,
+  sibAssignment.json,
 );
 await sib.close();
 const notOwner = await fetch(`${base}/api/paintings/${sibling.body.id}/finish`, {
@@ -545,7 +555,7 @@ check(
   series.paintings?.length === 2 && Array.isArray(series.table) && series.table.length === 2,
   series,
 );
-const cell = series.table?.find((c: Json) => c.strokes_per_look === 3);
+const cell = series.table?.find((c: Json) => c.strokes_per_assignment === 3);
 check(
   "results include the final score and think time",
   typeof cell?.final_score === "number" && typeof cell?.mean_think_ms === "number",
@@ -554,12 +564,12 @@ check(
 
 // The pool never hands out created paintings.
 const poolClient = await connectPool(token);
-const poolLook = await call(poolClient, "get_assignment");
-const poolId = poolLook.json.painting_id;
+const poolAssignment = await call(poolClient, "get_assignment");
+const poolId = poolAssignment.json.painting_id;
 check("the pool doesn't hand out created paintings", poolId !== p.id && poolId !== sibling.body.id, poolId);
 const crossed = await call(poolClient, "submit_stroke", {
-  token: look2.json.token,
-  stroke_data: bigStroke(poolLook.json, 300),
+  token: assignment2.json.token,
+  stroke_data: bigStroke(poolAssignment.json, 300),
 });
 check(
   "a scoped token doesn't work on the pool endpoint",
@@ -570,7 +580,7 @@ await poolClient.close();
 
 // Painting ids are public: a stranger sending bad keys gets limited, without
 // using up the painting's own allowance.
-const target = await create({ style: "landscape", size: "study", max_strokes: 5, strokes_per_look: 5 });
+const target = await create({ style: "landscape", size: "study", max_strokes: 5, strokes_per_assignment: 5 });
 const ping = { jsonrpc: "2.0", id: 1, method: "ping" };
 let strangerStatus = 0;
 for (let i = 0; i < 125 && strangerStatus !== 429; i++) {
@@ -590,8 +600,8 @@ check("a client sending bad keys is rate limited", strangerStatus === 429, stran
 const keyHolder = await connect(new URL(target.body.mcp_url), undefined, {
   "CF-Connecting-IP": "192.0.2.77",
 });
-const ownerLook = await scopedCall(keyHolder, "get_assignment");
-check("the agent key still works for its own client", !!ownerLook.json?.token, ownerLook.json);
+const ownerAssignment = await scopedCall(keyHolder, "get_assignment");
+check("the agent key still works for its own client", !!ownerAssignment.json?.token, ownerAssignment.json);
 await keyHolder.close();
 
 const isHtml = (res: Response) =>

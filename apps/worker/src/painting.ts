@@ -1,10 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import {
+  assignmentTtlMs,
   CHECKPOINT_EVERY,
   createdIdleMs,
   DEFAULT_CANVAS_IDLE_SECONDS,
   envNumber,
-  lookTtlMs,
   MAX_BATCH,
   MEDIUM,
   MEDIUM_DESCRIPTION,
@@ -18,20 +18,20 @@ import { type BatchStrokeInput, checkBounds, maxBrushSize, normalize, scaledMinB
 import { currentPhase, isStyleName, STYLES, type Style } from "./styles";
 import type { PaintingStats, PaintingStatus, PaintingSummary } from "./types";
 
-/** What one look shows: the canvas, and the reference when the painting has one. */
-export interface LookImages {
+/** What a new assignment shows: the canvas, and the reference when the painting has one. */
+export interface AssignmentImages {
   reference: Uint8Array | null;
   canvas: Uint8Array;
 }
 
-/** The fields a look sends the painter. */
-export type LookMetadata = Record<string, string | number | boolean | null>;
+/** The fields an assignment sends the painter. */
+export type AssignmentMetadata = Record<string, string | number | boolean | null>;
 
 export interface Assignment {
   token: string;
-  /** Null when this returns a look that is still open (no new image until its strokes are used). */
-  images: LookImages | null;
-  metadata: LookMetadata;
+  /** Null when this returns an assignment that is still open (no new image until its strokes are used). */
+  images: AssignmentImages | null;
+  metadata: AssignmentMetadata;
 }
 
 /** What `assign` returns for a painting that can't be painted. */
@@ -59,8 +59,10 @@ export interface SubmitResult {
   stroke_count: number;
   max_strokes: number;
   status: PaintingStatus;
-  /** Strokes left on this look's token. */
-  strokes_remaining: number;
+  /** Strokes left on this assignment's token. */
+  assignment_strokes_remaining: number;
+  /** Strokes left in the painting's budget (max_strokes - stroke_count). */
+  painting_strokes_remaining: number;
   reason?: RejectReason;
   detail?: string;
   /** Index (in the submitted batch) of the stroke that was rejected. */
@@ -81,7 +83,7 @@ export interface SubmitExtras {
 export interface StrokeLogEntry {
   version: number;
   created_at: number;
-  look: number;
+  assignment: number;
   think_ms: number | null;
   score: number | null;
   note: string | null;
@@ -112,12 +114,12 @@ interface Meta extends Record<string, SqlStorageValue> {
   version: number;
   created_at: number;
   finished_at: number | null;
-  strokes_per_look: number;
+  strokes_per_assignment: number;
   phases: string;
   reference: string | null;
   agent_key_hash: string | null;
   owner_key_hash: string | null;
-  looks: number;
+  assignments: number;
 }
 
 interface TokenRow extends Record<string, SqlStorageValue> {
@@ -125,11 +127,11 @@ interface TokenRow extends Record<string, SqlStorageValue> {
   /** The painting version the token's next stroke must apply to. */
   version: number;
   agent: string;
-  /** When the look was taken. */
+  /** When the assignment was handed out. */
   created_at: number;
   expires_at: number;
   remaining: number;
-  look: number;
+  assignment: number;
 }
 
 export function snapshotKey(paintingId: string, version: number) {
@@ -156,9 +158,9 @@ function styleOf(meta: Meta): Style {
  * Storage is only created by `init`, so requests naming a painting that
  * doesn't exist (e.g. forged tokens) leave nothing behind.
  *
- * Pool paintings hand out a fresh one-stroke look on every assignment.
- * Created paintings ration looks: a look's token allows `strokes_per_look`
- * strokes, and no new image is shown until they are used.
+ * Pool paintings hand out a new one-stroke assignment on every call.
+ * Created paintings ration assignments: an assignment's token allows
+ * `strokes_per_assignment` strokes, and no new image is shown until they are used.
  */
 export class Painting extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -187,22 +189,22 @@ export class Painting extends DurableObject<Env> {
       id TEXT PRIMARY KEY, kind TEXT NOT NULL, style TEXT NOT NULL, prompt TEXT,
       width INTEGER NOT NULL, height INTEGER NOT NULL, max_strokes INTEGER NOT NULL,
       status TEXT NOT NULL, version INTEGER NOT NULL, created_at INTEGER NOT NULL, finished_at INTEGER,
-      strokes_per_look INTEGER NOT NULL, phases TEXT NOT NULL, reference TEXT,
-      agent_key_hash TEXT, owner_key_hash TEXT, looks INTEGER NOT NULL DEFAULT 0
+      strokes_per_assignment INTEGER NOT NULL, phases TEXT NOT NULL, reference TEXT,
+      agent_key_hash TEXT, owner_key_hash TEXT, assignments INTEGER NOT NULL DEFAULT 0
     )`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS strokes (
       version INTEGER PRIMARY KEY, data TEXT NOT NULL, agent TEXT, created_at INTEGER NOT NULL,
-      look INTEGER NOT NULL, think_ms INTEGER, score REAL, note TEXT, model TEXT, effort TEXT,
+      assignment INTEGER NOT NULL, think_ms INTEGER, score REAL, note TEXT, model TEXT, effort TEXT,
       input_tokens INTEGER, output_tokens INTEGER, prompt_hash TEXT
     )`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS tokens (
       secret TEXT PRIMARY KEY, version INTEGER NOT NULL, agent TEXT NOT NULL, created_at INTEGER NOT NULL,
-      expires_at INTEGER NOT NULL, remaining INTEGER NOT NULL, look INTEGER NOT NULL
+      expires_at INTEGER NOT NULL, remaining INTEGER NOT NULL, assignment INTEGER NOT NULL
     )`);
     this.sql.exec("CREATE TABLE IF NOT EXISTS reference (grid BLOB NOT NULL)");
     this.sql.exec(
       `INSERT INTO meta (id, kind, style, prompt, width, height, max_strokes, status, version, created_at,
-        strokes_per_look, phases, reference, agent_key_hash, owner_key_hash)
+        strokes_per_assignment, phases, reference, agent_key_hash, owner_key_hash)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?)`,
       summary.id,
       summary.kind,
@@ -212,7 +214,7 @@ export class Painting extends DurableObject<Env> {
       summary.height,
       summary.maxStrokes,
       summary.createdAt,
-      summary.strokesPerLook,
+      summary.strokesPerAssignment,
       summary.phases,
       summary.reference,
       created?.agentKeyHash ?? null,
@@ -247,7 +249,7 @@ export class Painting extends DurableObject<Env> {
   }
 
   /**
-   * A look at the painting, `Unavailable` when it can't be painted, or null when
+   * An assignment on the painting, `Unavailable` when it can't be painted, or null when
    * it was never created.
    */
   async assign(agent: string): Promise<Assignment | Unavailable | null> {
@@ -268,7 +270,7 @@ export class Painting extends DurableObject<Env> {
       this.sql.exec("DELETE FROM tokens WHERE expires_at < ?", now - TOKEN_TTL_MS);
 
       if (meta.kind === "created") {
-        // Rationing: while the current look still has strokes, hand back the same
+        // Rationing: while the current assignment still has strokes, hand back the same
         // token without a new image. Anyone calling get_assignment gets it, so a
         // lost token never blocks the painting.
         const open = this.sql
@@ -289,22 +291,22 @@ export class Painting extends DurableObject<Env> {
       }
 
       const allowance =
-        meta.kind === "created" ? Math.min(meta.strokes_per_look, meta.max_strokes - meta.version) : 1;
-      const look = meta.looks + 1;
+        meta.kind === "created" ? Math.min(meta.strokes_per_assignment, meta.max_strokes - meta.version) : 1;
+      const number = meta.assignments + 1;
       const token: TokenRow = {
         secret: randomId(TOKEN_SECRET_LENGTH),
         version: meta.version,
         agent,
         created_at: now,
-        expires_at: now + (meta.kind === "created" ? lookTtlMs(allowance) : TOKEN_TTL_MS),
+        expires_at: now + (meta.kind === "created" ? assignmentTtlMs(allowance) : TOKEN_TTL_MS),
         remaining: allowance,
-        look,
+        assignment: number,
       };
       this.sql.exec(
-        "INSERT INTO tokens (secret, version, agent, created_at, expires_at, remaining, look) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO tokens (secret, version, agent, created_at, expires_at, remaining, assignment) VALUES (?, ?, ?, ?, ?, ?, ?)",
         ...Object.values(token),
       );
-      this.sql.exec("UPDATE meta SET looks = ?", look);
+      this.sql.exec("UPDATE meta SET assignments = ?", number);
 
       const canvas = this.latestImage;
       // The gallery's history starts at v0; retry it if init couldn't store it.
@@ -313,7 +315,7 @@ export class Painting extends DurableObject<Env> {
       return {
         token: makeToken(meta.id, token.secret),
         images: { reference, canvas },
-        metadata: this.metadata({ ...meta, looks: look }, token, true),
+        metadata: this.metadata({ ...meta, assignments: number }, token, true),
       };
     });
   }
@@ -394,13 +396,13 @@ export class Painting extends DurableObject<Env> {
         }
         // Token counts describe the whole submission; record them once.
         this.sql.exec(
-          `INSERT INTO strokes (version, data, agent, created_at, look, think_ms, score, note, model, effort,
+          `INSERT INTO strokes (version, data, agent, created_at, assignment, think_ms, score, note, model, effort,
             input_tokens, output_tokens, prompt_hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           version,
           data,
           agent,
           now,
-          token.look,
+          token.assignment,
           thinkMs,
           score,
           strokes[i]?.note ?? null,
@@ -431,7 +433,7 @@ export class Painting extends DurableObject<Env> {
         "UPDATE tokens SET version = ?, remaining = ?, expires_at = ? WHERE secret = ?",
         token.version,
         status === "done" ? 0 : token.remaining,
-        now + (meta.kind === "created" ? lookTtlMs(token.remaining) : TOKEN_TTL_MS),
+        now + (meta.kind === "created" ? assignmentTtlMs(token.remaining) : TOKEN_TTL_MS),
         secret,
       );
       meta.status = status;
@@ -482,7 +484,7 @@ export class Painting extends DurableObject<Env> {
     if (!this.meta()) return null;
     return this.sql
       .exec<StrokeLogEntry & Record<string, SqlStorageValue>>(
-        `SELECT version, created_at, look, think_ms, score, note, model, effort, input_tokens, output_tokens,
+        `SELECT version, created_at, assignment, think_ms, score, note, model, effort, input_tokens, output_tokens,
           prompt_hash FROM strokes ORDER BY version`,
       )
       .toArray();
@@ -537,9 +539,9 @@ export class Painting extends DurableObject<Env> {
     await this.scheduleAlarm();
   }
 
-  private metadata(meta: Meta, token: TokenRow, newLook: boolean): LookMetadata {
+  private metadata(meta: Meta, token: TokenRow, newAssignment: boolean): AssignmentMetadata {
     const style = styleOf(meta);
-    const fields: LookMetadata = {
+    const fields: AssignmentMetadata = {
       token: makeToken(meta.id, token.secret),
       painting_id: meta.id,
       prompt: meta.prompt,
@@ -551,6 +553,7 @@ export class Painting extends DurableObject<Env> {
       style: style.name,
       stroke_count: meta.version,
       max_strokes: meta.max_strokes,
+      painting_strokes_remaining: meta.max_strokes - meta.version,
     };
     if (meta.phases !== "off") {
       const phase = currentPhase(style, meta.version, meta.max_strokes);
@@ -560,11 +563,11 @@ export class Painting extends DurableObject<Env> {
     }
     fields.expires_in_seconds = Math.max(0, Math.round((token.expires_at - Date.now()) / 1000));
     if (meta.kind === "created") {
-      fields.look = token.look;
-      fields.strokes_per_look = meta.strokes_per_look;
-      fields.strokes_remaining = token.remaining;
-      // false: this look was already open; no new image until its strokes are used.
-      fields.new_look = newLook;
+      fields.assignment = token.assignment;
+      fields.strokes_per_assignment = meta.strokes_per_assignment;
+      fields.assignment_strokes_remaining = token.remaining;
+      // false: this assignment was already open; no new image until its strokes are used.
+      fields.new_assignment = newAssignment;
       fields.has_reference = meta.reference !== null;
     }
     return fields;
@@ -582,7 +585,8 @@ export class Painting extends DurableObject<Env> {
       stroke_count: meta.version,
       max_strokes: meta.max_strokes,
       status: meta.status as PaintingStatus,
-      strokes_remaining: token?.remaining ?? 0,
+      assignment_strokes_remaining: token?.remaining ?? 0,
+      painting_strokes_remaining: meta.max_strokes - meta.version,
       ...extra,
     };
   }
@@ -596,7 +600,8 @@ export class Painting extends DurableObject<Env> {
       stroke_count: meta?.version ?? 0,
       max_strokes: meta?.max_strokes ?? 0,
       status: (meta?.status ?? "active") as PaintingStatus,
-      strokes_remaining: 0,
+      assignment_strokes_remaining: 0,
+      painting_strokes_remaining: (meta?.max_strokes ?? 0) - (meta?.version ?? 0),
       reason,
       ...(detail ? { detail } : {}),
     });
@@ -609,20 +614,20 @@ export class Painting extends DurableObject<Env> {
     if (token.version !== meta.version) {
       return reject(
         "stale_assignment",
-        "Another stroke landed since this look. Call get_assignment for the current canvas.",
+        "Another stroke landed after this assignment was handed out. Call get_assignment for the current canvas.",
       );
     }
     const allowed = Math.min(token.remaining, MAX_BATCH);
     if (count > allowed) {
       return {
         ...reject("too_many_strokes", `This token allows ${allowed} more stroke(s) in one submission.`),
-        strokes_remaining: token.remaining,
+        assignment_strokes_remaining: token.remaining,
       };
     }
     if (count === 0 && !(finishing && meta.kind === "created")) {
       return {
         ...reject("invalid_stroke", "Submit at least one stroke."),
-        strokes_remaining: token.remaining,
+        assignment_strokes_remaining: token.remaining,
       };
     }
     return null;
@@ -673,7 +678,7 @@ export class Painting extends DurableObject<Env> {
       status: meta.status as PaintingStatus,
       at,
       lastScore: agg.last_score,
-      looks: meta.looks,
+      assignments: meta.assignments,
       meanThinkMs: agg.mean_think,
       tokensIn: agg.tin ?? 0,
       tokensOut: agg.tout ?? 0,

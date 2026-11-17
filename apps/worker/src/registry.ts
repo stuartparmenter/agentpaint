@@ -27,13 +27,13 @@ interface Row extends Record<string, SqlStorageValue> {
   lease_until: number;
   series_id: string | null;
   size: string | null;
-  strokes_per_look: number;
+  strokes_per_assignment: number;
   phases: string;
   reference: string | null;
   blank_score: number | null;
   mean_color_score: number | null;
   last_score: number | null;
-  looks: number;
+  assignments: number;
   mean_think_ms: number | null;
   tokens_in: number;
   tokens_out: number;
@@ -56,13 +56,13 @@ function toSummary(r: Row): PaintingSummary {
     finishedAt: r.finished_at,
     seriesId: r.series_id,
     size: r.size as SizeName | null,
-    strokesPerLook: r.strokes_per_look,
+    strokesPerAssignment: r.strokes_per_assignment,
     phases: r.phases as PhaseMode,
     reference: r.reference,
     blankScore: r.blank_score,
     meanColorScore: r.mean_color_score,
     lastScore: r.last_score,
-    looks: r.looks,
+    assignments: r.assignments,
     meanThinkMs: r.mean_think_ms,
     tokensIn: r.tokens_in,
     tokensOut: r.tokens_out,
@@ -114,13 +114,13 @@ export class Registry extends DurableObject<Env> {
       lease_until INTEGER NOT NULL DEFAULT 0,
       series_id TEXT,
       size TEXT,
-      strokes_per_look INTEGER NOT NULL,
+      strokes_per_assignment INTEGER NOT NULL,
       phases TEXT NOT NULL,
       reference TEXT,
       blank_score REAL,
       mean_color_score REAL,
       last_score REAL,
-      looks INTEGER NOT NULL DEFAULT 0,
+      assignments INTEGER NOT NULL DEFAULT 0,
       mean_think_ms REAL,
       tokens_in INTEGER NOT NULL DEFAULT 0,
       tokens_out INTEGER NOT NULL DEFAULT 0,
@@ -178,7 +178,7 @@ export class Registry extends DurableObject<Env> {
     const id = randomId(PAINTING_ID_LENGTH);
     this.sql.exec(
       `INSERT INTO paintings (id, kind, status, style, prompt, width, height, max_strokes, created_at,
-        lease_until, strokes_per_look, phases) VALUES (?, 'pool', 'active', ?, ?, ?, ?, ?, ?, ?, 1, 'enforced')`,
+        lease_until, strokes_per_assignment, phases) VALUES (?, 'pool', 'active', ?, ?, ?, ?, ?, ?, ?, 1, 'enforced')`,
       id,
       style.name,
       pick(style.prompts),
@@ -255,7 +255,7 @@ export class Registry extends DurableObject<Env> {
     const id = randomId(PAINTING_ID_LENGTH);
     this.sql.exec(
       `INSERT INTO paintings (id, kind, status, style, prompt, width, height, max_strokes, created_at,
-        series_id, size, strokes_per_look, phases, reference, blank_score, mean_color_score, creator)
+        series_id, size, strokes_per_assignment, phases, reference, blank_score, mean_color_score, creator)
        VALUES (?, 'created', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       settings.style,
@@ -266,7 +266,7 @@ export class Registry extends DurableObject<Env> {
       now,
       seriesId,
       settings.size,
-      settings.strokesPerLook,
+      settings.strokesPerAssignment,
       settings.phases,
       settings.reference,
       settings.blankScore,
@@ -284,7 +284,7 @@ export class Registry extends DurableObject<Env> {
       `UPDATE paintings SET stroke_count = ?, status = ?, last_stroke_at = CASE WHEN ? > 0 THEN ? ELSE last_stroke_at END,
         lease_until = 0,
         finished_at = CASE WHEN ? IN ('done', 'expired') AND finished_at IS NULL THEN ? ELSE finished_at END,
-        last_score = COALESCE(?, last_score), looks = COALESCE(?, looks), mean_think_ms = COALESCE(?, mean_think_ms),
+        last_score = COALESCE(?, last_score), assignments = COALESCE(?, assignments), mean_think_ms = COALESCE(?, mean_think_ms),
         tokens_in = COALESCE(?, tokens_in), tokens_out = COALESCE(?, tokens_out), models = COALESCE(?, models)
        WHERE id = ? AND stroke_count <= ? AND status = 'active'`,
       stats.strokeCount,
@@ -294,7 +294,7 @@ export class Registry extends DurableObject<Env> {
       stats.status,
       stats.at,
       stats.lastScore ?? null,
-      stats.looks ?? null,
+      stats.assignments ?? null,
       stats.meanThinkMs ?? null,
       stats.tokensIn ?? null,
       stats.tokensOut ?? null,
@@ -373,7 +373,7 @@ export class Registry extends DurableObject<Env> {
     return `id, kind,
       CASE WHEN kind = 'pool' AND status = 'done' AND finished_at <= ? THEN 'archived' ELSE status END AS status,
       style, prompt, width, height, stroke_count, max_strokes, created_at, last_stroke_at, finished_at,
-      lease_until, series_id, size, strokes_per_look, phases, reference, blank_score, mean_color_score, last_score,
-      looks, mean_think_ms, tokens_in, tokens_out, models`;
+      lease_until, series_id, size, strokes_per_assignment, phases, reference, blank_score, mean_color_score, last_score,
+      assignments, mean_think_ms, tokens_in, tokens_out, models`;
   }
 }

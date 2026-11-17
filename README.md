@@ -1,10 +1,10 @@
 # AgentPaint
 
-Paintings made by AI agents over MCP. An agent takes a look at a canvas (`get_assignment`), adds
-strokes (`submit_stroke`), and looks again. AgentPaint measures that closed loop: the same painting,
-reference and stroke budget painted with a look before every stroke, a look every k strokes, or one
-look for the whole painting, scored against the reference after every stroke, across a ladder of
-models. A public gallery shows every painting, its stroke-by-stroke history and its scores.
+Paintings made by AI agents over MCP. An agent gets an assignment (`get_assignment`): the canvas and
+an allowance of strokes. It uses them (`submit_stroke`), then gets the next assignment. AgentPaint
+measures that closed loop: the same painting, reference and stroke budget painted with the agent
+seeing the canvas before every stroke, every k strokes, or once for the whole painting, scored
+against the reference after every stroke, across a ladder of models. A public gallery shows every painting, its stroke-by-stroke history and its scores.
 
 Runs on Cloudflare Workers. The paint simulation is Rust compiled to WebAssembly.
 
@@ -16,7 +16,7 @@ around the built-in reference images: each test page compares every model that h
 reference, under the same settings, against it.
 
 1. Open a reference test and use **Start a run**: pick a size (`study` is quicker), a stroke budget
-   and how many strokes each look allows.
+   and how many strokes each assignment allows.
 2. The painting's page shows its MCP URL and a ready-made command. In a terminal with Claude Code:
 
    ```sh
@@ -31,8 +31,8 @@ reference, under the same settings, against it.
    ```
 3. Watch the painting page: the canvas updates as strokes land, with each stroke's note, think time
    and score against the reference. Play it back with the slider.
-4. The test page (`/tests/<reference>`) shows the results table, one score chart per look setting
-   with a line per model, and the finished canvases. Runs are compared only with runs of the same
+4. The test page (`/tests/<reference>`) shows the results table, one score chart per
+   strokes-per-assignment setting with a line per model, and the finished canvases. Runs are compared only with runs of the same
    style, size, budget and phases; a selector switches between those conditions. The model is whatever the
    painter reports when it submits strokes; runs that report none show as "(not reported)".
 
@@ -41,7 +41,7 @@ reference, under the same settings, against it.
 ```
 agent ──MCP──▶ Worker (Hono, apps/worker)
    /mcp/p/<id>/<key>  one created painting       ├─ Registry DO (one): paintings, series, pool leases
-   /mcp (bearer)      the shared pool            └─ Painting DO (one per painting): stroke log, looks,
+   /mcp (bearer)      the shared pool            └─ Painting DO (one per painting): stroke log, assignments,
                                                        WASM canvas, reference grid
                                                        ├─ renderer.wasm (crates/renderer)
                                                        └─ R2: JPEG per stroke, checkpoints, reference
@@ -129,7 +129,7 @@ The e2e checks for agent-bound tokens need a second agent in `MCP_TOKENS`.
 A created painting, until it is finished:
 
 ```sh
-bun run paint -- --url <MCP URL> --model claude-opus-5-5 [--effort medium]
+bun run paint -- --url <MCP URL> --model claude-opus-5-5 [--effort high]
 bun run paint -- --url <MCP URL> --random          # random strokes, no Claude
 ```
 
@@ -140,7 +140,8 @@ export AGENTPAINT_TOKEN=<token from MCP_TOKENS>
 bun run paint -- --url http://127.0.0.1:8787/mcp --strokes 10 --workers 2
 ```
 
-Painting with Claude costs real money: every look sends the canvas (and the reference) as images.
+Painting with Claude costs real money: every assignment sends the canvas (and the reference) as
+images. Without `--effort`, no effort is sent and each model runs at its own default effort.
 Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
 
 ## Experiments
@@ -148,11 +149,14 @@ Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
 - **Batches of runs.** `bun run matrix` creates its paintings as one series; the test page shows
   just that batch with `?series=<id>`, and `GET /api/series/<id>` returns its results table.
   `GET /api/tests/<reference>` returns a test's runs, score curves and table.
-- **Looks.** A created painting's `strokes_per_look` sets how many strokes one look allows. A look's
-  token carries that allowance; while strokes remain, `get_assignment` returns the same token with no
-  images, so the server, not the client, rations what the painter sees. Strokes go in one at a time
+- **Assignments.** A created painting's `strokes_per_assignment` sets how many strokes one
+  assignment allows. An assignment's token carries that allowance; while strokes remain,
+  `get_assignment` returns the same token with no images, so the server, not the client, rations
+  what the painter sees. The metadata and every `submit_stroke` reply give both counts:
+  `assignment_strokes_remaining` (strokes this assignment still allows) and
+  `painting_strokes_remaining` (strokes left in the painting's budget). Strokes go in one at a time
   or in batches (up to the remaining allowance, 50 per call); a batch is validated as a whole before
-  any of it applies. A look's token stays valid for 10 minutes plus 30 seconds per allowed stroke
+  any of it applies. An assignment's token stays valid for 10 minutes plus 30 seconds per allowed stroke
   (at most two hours), refreshed after each accepted batch. `finished: true` ends a painting early;
   the budget is a ceiling.
 - **Phases.** `off` (default) sends no phase information, `guidance` sends the style's phase name
@@ -163,26 +167,29 @@ Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
   sent to the painter. The API returns this raw score. The pages and `matrix` show it rescaled
   so that 0 is a blank canvas and 1 is identical: `(score − blank) / (1 − blank)`. For scale, a
   canvas filled with the reference's average color is shown too (0.54 on the sunset study).
-- **Stroke log.** `GET /api/paintings/<id>/strokes`: per stroke, the look it followed, think time
-  (server-measured: submit time minus the time of that look), score, the painter's note, and
+- **Stroke log.** `GET /api/paintings/<id>/strokes`: per stroke, the assignment it belongs to, think
+  time (server-measured: submit time minus the time the assignment was handed out), score, the painter's note, and
   self-reported model, effort, token counts and prompt hash. The bundled painter reports the model
   named in each API response, the effort it actually sent, tokens spent since its previous
   submission, and a hash of its prompts (`tools/painter/src/prompt.ts`), which are identical for
-  every model and look setting.
-- **Model ladders.** `bun run matrix` creates one series and paints every model × look setting ×
-  repeat, several at once, then prints the results table (also at `GET /api/series/<id>`):
+  every model and strokes-per-assignment setting.
+- **Model ladders.** `bun run matrix` creates one series and paints every model × strokes per
+  assignment × repeat, several at once, then prints the results table (also at `GET /api/series/<id>`):
 
   ```sh
   bun run matrix -- --url http://127.0.0.1:8787 \
-    --models claude-haiku-4-5,claude-sonnet-5-5,claude-opus-5-5 --looks 1,20,all \
+    --models claude-haiku-4-5,claude-sonnet-5-5,claude-opus-5-5 --per-assignment 1,20,all \
     --style landscape --reference krita-sunset --size study --repeat 2 --parallel 3
   ```
 
-  Each model gets only the parameters it supports (from the Models API): effort where supported,
-  adaptive thinking where supported, otherwise extended thinking with `--thinking-budget` tokens.
-  No fallback model is used. Every look is a new conversation, so the canvas is the only thing a
-  look carries over from earlier ones. Keys for
-  the created paintings are saved to `.matrix/<series>.json`.
+  `--per-assignment` takes numbers or `all` (the whole budget in one assignment). Each model gets
+  only the parameters it supports (from the Models API): adaptive thinking where supported,
+  otherwise extended thinking with `--thinking-budget` tokens, with summarized thinking either way;
+  effort only when `--effort` is given and the model supports that level, so by default each model
+  runs at its own default effort. No fallback model is used. Every assignment is a new
+  conversation, so the canvas is the only thing an assignment carries over from earlier ones. Keys
+  for the created paintings are saved to `.matrix/<series>.json`, and each assignment's thinking
+  summaries to `.matrix/thinking/<painting id>.jsonl`.
 - **Greedy baseline.** A non-model reference point: for each stroke of the budget it tries random
   candidate strokes (same format and brush, color sampled from the reference, brush size shrinking
   from coarse to fine) and keeps the one that raises the score most. On the sunset study (512 px,
