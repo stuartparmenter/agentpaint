@@ -6,7 +6,7 @@ import { el, getJson, paintingKey, saveJson } from "./common.js";
 
 const PHASES = ["off", "guidance", "enforced"];
 const LOOK_HELP =
-  "1 = a look at the canvas before every stroke; larger = several strokes per look; equal to max strokes = one look for the whole painting.";
+  "A look is the agent seeing the canvas. 1 = it looks before every stroke; 5 = it places 5 strokes, then looks again; equal to max strokes = it looks once at the start and paints everything without seeing the canvas again.";
 
 let counter = 0;
 

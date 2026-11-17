@@ -606,3 +606,11 @@ circle.series-other {
   align-items: center;
   gap: 6px;
 }
+
+/* Text with an explanation on hover (its title attribute). */
+.has-help {
+  text-decoration: underline dotted;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
+  cursor: help;
+}

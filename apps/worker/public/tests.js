@@ -15,6 +15,7 @@ import {
   fmtSeconds,
   getJson,
   lookLabel,
+  lookTitle,
   poll,
   snapshotUrl,
   table,
@@ -134,7 +135,7 @@ async function showTest() {
     el("p", {
       className: "small muted",
       textContent:
-        "One lane per model, one column per look setting. Each run shows its final canvas (linked to its playback) and numbers; repeated runs sit together in their cell.",
+        "One lane per model, one column per look setting. A look is the agent seeing the canvas; the settings differ in how many strokes it places between looks (hover a column title for details). Each run shows its final canvas (linked to its playback) and numbers; repeated runs sit together in their cell.",
     }),
     ui.lanes,
     ui.tableView,
@@ -254,7 +255,7 @@ function renderLanes(data, cells, colors, models, settings, max) {
       for (const spl of settings) {
         const cell = cells.find((c) => c.models === m && c.strokes_per_look === spl);
         const runs = cell?.runs ?? [];
-        const children = [el("h4", { textContent: lookLabel(spl, max) })];
+        const children = [lookTitle("h4", spl, max)];
         if (!runs.length) children.push(el("p", { className: "small muted", textContent: "No run" }));
         if (runs.length > 1) {
           children.push(
@@ -384,7 +385,7 @@ function renderCharts(data, cells, colors, models, settings, max) {
         })),
       );
     chart.setData({ series, refs, xMax: max, yDomain });
-    return el("div", { className: "facet" }, [el("h3", { textContent: title }), chart.root]);
+    return el("div", { className: "facet" }, [lookTitle("h3", spl, max), chart.root]);
   });
   ui.chartsPanel.replaceChildren(
     el("h2", { textContent: "Score per stroke" }),

@@ -119,17 +119,40 @@ export function fmtDate(ms) {
   return new Date(ms).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 }
 
-/** A look setting: "1 stroke per look", "5 strokes per look", or "One look" for the whole budget. */
+/**
+ * A look setting's name. A look is the agent seeing the canvas; the setting is how
+ * many strokes it places between looks.
+ */
 export function lookLabel(strokesPerLook, maxStrokes) {
-  if (maxStrokes && strokesPerLook >= maxStrokes) return "One look";
-  return strokesPerLook === 1 ? "1 stroke per look" : `${strokesPerLook} strokes per look`;
+  if (maxStrokes && strokesPerLook >= maxStrokes) return "One look at the start";
+  return strokesPerLook === 1 ? "Looks after every stroke" : `Looks every ${strokesPerLook} strokes`;
+}
+
+/** What a look setting means for the agent, for hover text. */
+export function lookHelp(strokesPerLook, maxStrokes) {
+  if (maxStrokes && strokesPerLook >= maxStrokes) {
+    return `The agent sees the reference and the blank canvas once, then places all ${maxStrokes} strokes without seeing the canvas again.`;
+  }
+  if (strokesPerLook === 1) {
+    return "The agent sees the canvas before every stroke, so it can react to each one.";
+  }
+  return `The agent sees the canvas, places ${strokesPerLook} strokes without seeing them land, then looks again.`;
+}
+
+/** A look setting's name with its explanation on hover. */
+export function lookTitle(tag, strokesPerLook, maxStrokes) {
+  return el(tag, {
+    className: "has-help",
+    title: lookHelp(strokesPerLook, maxStrokes),
+    textContent: lookLabel(strokesPerLook, maxStrokes),
+  });
 }
 
 /** A painting's look setting as a badge. */
 export function lookBadge(p) {
   return el("span", {
     className: "badge look",
-    title: "Look setting",
+    title: lookHelp(p.strokesPerLook, p.maxStrokes),
     textContent: lookLabel(p.strokesPerLook, p.maxStrokes),
   });
 }

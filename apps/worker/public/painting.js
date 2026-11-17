@@ -17,7 +17,7 @@ import {
   loadJson,
   loadReferences,
   lookBadge,
-  lookLabel,
+  lookTitle,
   paintingKey,
   playback,
   poll,
@@ -230,7 +230,7 @@ function renderSettings() {
     ["Style", p.style],
     ["Prompt", p.prompt ?? "Open subject (none given)"],
     ["Size", `${p.size ?? "pool"} · ${p.width}×${p.height}`],
-    ["Look setting", lookLabel(p.strokesPerLook, p.maxStrokes)],
+    ["Look setting", lookTitle("span", p.strokesPerLook, p.maxStrokes)],
     ["Phases", p.phases],
     ["Budget", `${p.strokeCount} of ${p.maxStrokes} strokes used`],
     ["Looks", fmtInt(p.looks)],
@@ -243,7 +243,8 @@ function renderSettings() {
   rows.push(["Created", fmtDate(p.createdAt)]);
   if (p.finishedAt) rows.push(["Finished", fmtDate(p.finishedAt)]);
   const nodes = [];
-  for (const [k, v] of rows) nodes.push(el("dt", { textContent: k }), el("dd", { textContent: v }));
+  // Values are strings (added as text) or elements.
+  for (const [k, v] of rows) nodes.push(el("dt", { textContent: k }), el("dd", {}, [v]));
   ui.settings.replaceChildren(...nodes);
 }
 
