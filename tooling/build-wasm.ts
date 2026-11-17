@@ -4,7 +4,9 @@
 // a matching prebuilt CLI is downloaded into .tools/ (checksum-verified), with
 // `cargo install` as the fallback on platforms without a pinned binary.
 //
-//   bun tooling/build-wasm.ts [--features mixbox]
+//   bun tooling/build-wasm.ts [--spectral]
+//
+// --spectral builds with hokusai's spectral mixing instead of the default, Mixbox.
 
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { arch, homedir, platform } from "node:os";
@@ -25,9 +27,7 @@ const tools = join(root, ".tools");
 const bindgen = join(tools, "bin", "wasm-bindgen");
 const outDir = join(root, "apps/worker/src/wasm");
 const wasmFile = join(root, "target/wasm32-unknown-unknown/release/agentpaint_renderer.wasm");
-const features = process.argv.includes("--features")
-  ? ["--features", process.argv[process.argv.indexOf("--features") + 1] ?? ""]
-  : [];
+const features = process.argv.includes("--spectral") ? ["--no-default-features"] : [];
 
 // CI installs rustup into ~/.cargo/bin without touching PATH for later steps.
 const cargoBin = join(process.env.CARGO_HOME ?? join(homedir(), ".cargo"), "bin");

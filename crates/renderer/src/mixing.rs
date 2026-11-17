@@ -4,9 +4,12 @@
 //! into the mixing model's space, blends, and converts back, so the paint buffer
 //! never stores model-specific data.
 //!
-//! - Default: hokusai's 10-channel spectral weighted geometric mean (libmypaint's
-//!   "pigment" mode). Apache-2.0.
-//! - `mixbox` feature: Mixbox latent-space mixing. More vivid, but CC BY-NC 4.0.
+//! - `mixbox` feature (default): Mixbox latent-space mixing. Vivid, and converting a
+//!   color in and out is exact, so thin layers of one color don't drift.
+//!   CC BY-NC 4.0, non-commercial use only.
+//! - Without it: hokusai's 10-channel spectral weighted geometric mean (libmypaint's
+//!   "pigment" mode). Apache-2.0. More muted, and saturated blues and greens shift
+//!   slightly under many thin layers of the same color.
 
 #[cfg(not(feature = "mixbox"))]
 use hokusai_core::spectral::{fastpow, rgb_to_spectral, spectral_to_rgb};

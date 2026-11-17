@@ -77,9 +77,10 @@ browser ──▶ pages (apps/worker/public) + /api/paintings, /api/series
 - Each stroke builds its own per-pixel coverage, driven by `flow` and capped at `opacity`, then
   mixes into the paint once at the end of the stroke. An opaque stroke always covers what is under
   it.
-- Colors mix like pigment: hokusai's spectral model by default, or Mixbox with the `mixbox` cargo
-  feature (`bun tooling/build-wasm.ts --features mixbox`). **Mixbox is CC BY-NC 4.0, non-commercial
-  use only.** Mixbox gives more vivid pigment mixes; spectral is more muted.
+- Colors mix like pigment, using Mixbox. **Mixbox is CC BY-NC 4.0, non-commercial use only.**
+  `bun tooling/build-wasm.ts --spectral` builds with hokusai's spectral model instead (Apache-2.0),
+  which is more muted and lets saturated blues and greens shift slightly under many thin layers of
+  the same color. Scores from the two builds aren't comparable.
 - The canvas has a woven texture, and paint thickness drives impasto lighting.
 - Each pixel stores 10 bytes (16-bit linear RGB, coverage, thickness); a 1024² checkpoint is a few MB
   compressed. Snapshots are JPEG (quality 90): the canvas weave makes PNGs about 8x larger.
@@ -185,8 +186,8 @@ Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
 - **Greedy baseline.** A non-model reference point: for each stroke of the budget it tries random
   candidate strokes (same format and brush, color sampled from the reference, brush size shrinking
   from coarse to fine) and keeps the one that raises the score most. On the sunset study (512 px,
-  250 strokes, 24 candidates) it reaches 0.954, against anchors of 0.754 (blank) and 0.887 (flat
-  average color):
+  250 strokes, 24 candidates) it reaches 0.81 on the pages' scale (raw 0.954), where one flat
+  average color scores 0.54:
 
   ```sh
   cargo run --release -p agentpaint-renderer --example greedy_baseline -- \
@@ -258,4 +259,5 @@ MCP URL.
   `crates/renderer/examples/prepare_reference.rs`).
 - hokusai (Apache-2.0) provides the brush engine.
 - JPEG encoding uses `jpeg-encoder`, which is based in part on the work of the Independent JPEG Group.
-- The optional `mixbox` feature uses Mixbox (CC BY-NC 4.0).
+- Color mixing uses [Mixbox](https://github.com/scrtwpns/mixbox) (CC BY-NC 4.0, non-commercial
+  use only); the `--spectral` build doesn't.

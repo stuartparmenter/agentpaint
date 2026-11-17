@@ -8,7 +8,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [features]
-default = []
+default = ["mixbox"]
 # Mixbox pigment mixing (CC BY-NC 4.0 — non-commercial use only).
 # Without it, colors mix with hokusai's spectral (WGM) model.
 mixbox = ["dep:mixbox"]
