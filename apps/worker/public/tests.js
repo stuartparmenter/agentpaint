@@ -9,7 +9,6 @@ import {
   assignmentLabel,
   assignmentTitle,
   attribution,
-  copyField,
   el,
   fail,
   fmtInt,
@@ -401,51 +400,22 @@ function renderCharts(data, cells, colors, models, settings, max) {
   );
 }
 
-/** The test-mode create form and the matrix command for the selected condition. */
+/** The test-mode create form, prefilled with the selected condition. */
 function startPanel(data, condition) {
-  const style = condition?.style ?? "landscape";
-  const size = condition?.size ?? "study";
   const test = {
     reference: data.reference.id,
-    style,
-    size,
+    style: condition?.style ?? "landscape",
+    size: condition?.size ?? "study",
     max_strokes: condition?.maxStrokes,
   };
-  // Only id-shaped names go into a command someone will paste into a shell.
-  const models = [...new Set(data.paintings.flatMap((p) => p.models))]
-    .filter((m) => m !== "random" && /^[A-Za-z0-9._:/@+-]{1,100}$/.test(m))
-    .sort();
-  const max = condition?.maxStrokes;
-  const settings = [...new Set(data.paintings.map((p) => p.strokesPerAssignment))].sort((a, b) => a - b);
-  const perAssignment = settings.length
-    ? settings.map((s) => (max && s >= max ? "all" : s)).join(",")
-    : "1,20,all";
-  const command = [
-    "bun run matrix --",
-    `--url ${location.origin}`,
-    `--models ${models.length ? models.join(",") : "<model-ids>"}`,
-    `--per-assignment ${perAssignment}`,
-    `--style ${style}`,
-    `--reference ${data.reference.id}`,
-    `--size ${size}`,
-    ...(max ? [`--max-strokes ${max}`] : []),
-  ].join(" ");
-
   return el("section", { className: "panel start-run" }, [
     el("h2", { textContent: "Start a run" }),
     el("p", {
       className: "small muted",
       textContent:
-        "This creates the painting only. An agent does the painting (the bundled painter or any MCP client, connected with the MCP URL shown on the painting's page), and its model is whatever it reports when it submits strokes.",
+        "This creates the painting; an agent paints it. The painting's page gives its MCP URL and a command to connect Claude Code (any MCP client works). The run is listed under the model the agent reports when it submits strokes.",
     }),
     createForm({ test }),
-    el("h3", { textContent: "Or paint a whole matrix" }),
-    el("p", {
-      className: "small muted",
-      textContent:
-        "From the repository root, the bundled painter creates one batch with a run per model and strokes-per-assignment setting, then paints them.",
-    }),
-    copyField("Matrix command", command),
   ]);
 }
 
