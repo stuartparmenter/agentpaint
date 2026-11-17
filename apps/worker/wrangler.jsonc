@@ -1,0 +1,55 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "agentpaint",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-17",
+  "observability": { "enabled": true },
+
+  // Compile the Rust renderer to WASM before every build; `wrangler dev`
+  // rebuilds when the renderer sources change.
+  "build": {
+    "command": "bun run build:wasm",
+    "cwd": "../..",
+    "watch_dir": "../../crates/renderer/src"
+  },
+
+  // Gallery page. The Worker only runs first for the API and MCP endpoint.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": ["/api/*", "/mcp"]
+  },
+
+  // Rendering a stroke is CPU-bound (tens of ms); give replays after an
+  // eviction headroom beyond the 30 s default.
+  "limits": { "cpu_ms": 120000 },
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "PAINTING", "class_name": "Painting" },
+      { "name": "REGISTRY", "class_name": "Registry" }
+    ]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Painting", "Registry"] }],
+
+  "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "agentpaint-snapshots" }],
+
+  // Per-agent MCP request rate limit.
+  "ratelimits": [{ "name": "MCP_LIMITER", "namespace_id": "2001", "simple": { "limit": 120, "period": 60 } }],
+
+  "vars": { "MAX_ACTIVE_PAINTINGS": "6", "CANVAS_IDLE_SECONDS": "600" },
+  // MCP_TOKENS: comma-separated `name:token` pairs (tokens >= 32 chars). Locally, set it in .dev.vars;
+  // in production `wrangler secret put MCP_TOKENS`; for previews
+  // `wrangler preview base-config secret put MCP_TOKENS`.
+  "secrets": { "required": ["MCP_TOKENS"] },
+
+  // Worker Previews (one per branch, built by Workers Builds). Each Preview gets
+  // its own Durable Objects automatically; snapshots go to a separate bucket.
+  "previews": {
+    "vars": { "MAX_ACTIVE_PAINTINGS": "3", "CANVAS_IDLE_SECONDS": "600" },
+    "r2_buckets": [{ "binding": "SNAPSHOTS", "bucket_name": "agentpaint-snapshots-preview" }],
+    "ratelimits": [
+      { "name": "MCP_LIMITER", "namespace_id": "2002", "simple": { "limit": 120, "period": 60 } }
+    ]
+  }
+}

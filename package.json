@@ -1,0 +1,30 @@
+{
+  "name": "agentpaint",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "workspaces": [
+    "apps/*",
+    "tools/*"
+  ],
+  "packageManager": "bun@1.4.4",
+  "scripts": {
+    "build:wasm": "bun tooling/build-wasm.ts",
+    "dev": "bun run --cwd apps/worker dev",
+    "check": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "bun run --cwd apps/worker typecheck && tsc -p apps/worker/test/tsconfig.json && bun run --cwd tools/painter typecheck",
+    "paint": "bun run --cwd tools/painter start",
+    "test:e2e": "bun tooling/e2e.ts",
+    "test": "bun test apps/worker/test && cargo test --workspace"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.6.8",
+    "@modelcontextprotocol/client": "2.4.0",
+    "@types/bun": "1.4.4",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "bun": ">=1.4.4"
+  }
+}

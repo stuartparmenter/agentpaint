@@ -1,0 +1,4 @@
+# Copy to .dev.vars for `wrangler dev`.
+# Comma-separated name:token pairs; tokens must be at least 32 characters.
+# A second agent lets the e2e test check that tokens are bound to their agent.
+MCP_TOKENS=local:replace-with-a-random-token-of-32-or-more-characters,second:replace-with-another-random-token-32-chars

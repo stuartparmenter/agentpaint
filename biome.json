@@ -1,0 +1,30 @@
+{
+  "$schema": "https://biomejs.dev/schemas/2.6.8/schema.json",
+  "files": {
+    "includes": [
+      "**",
+      "!**/node_modules",
+      "!**/.wrangler",
+      "!target",
+      "!.tools",
+      "!apps/worker/src/wasm",
+      "!apps/worker/worker-configuration.d.ts",
+      "!bun.lock"
+    ]
+  },
+  "formatter": {
+    "indentStyle": "space",
+    "lineWidth": 110
+  },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "preset": "recommended"
+    }
+  },
+  "javascript": {
+    "formatter": {
+      "quoteStyle": "double"
+    }
+  }
+}

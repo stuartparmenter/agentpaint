@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["crates/renderer"]
+
+[workspace.package]
+edition = "2024"
+
+[profile.release]
+# The renderer is CPU-bound per stroke, so optimize for speed over size.
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = "debuginfo"
+panic = "abort"
