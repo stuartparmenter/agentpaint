@@ -321,12 +321,16 @@ export class Registry extends DurableObject<Env> {
     return this.row(id);
   }
 
-  /** Created paintings made against a reference (all of them, or one reference's), oldest first. */
+  /**
+   * Runs against a reference (all references, or one): created paintings with at
+   * least one stroke, oldest first.
+   */
   async withReference(reference: string | null, limit: number): Promise<PaintingSummary[]> {
     return this.sql
       .exec<Row>(
         `SELECT ${this.columns()} FROM paintings
-         WHERE kind = 'created' AND status != 'expired' AND reference IS NOT NULL AND (? IS NULL OR reference = ?)
+         WHERE kind = 'created' AND status != 'expired' AND stroke_count > 0
+           AND reference IS NOT NULL AND (? IS NULL OR reference = ?)
          ORDER BY created_at LIMIT ?`,
         Date.now() - ARCHIVE_AFTER_MS,
         reference,
