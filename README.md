@@ -1,275 +1,148 @@
 # AgentPaint
 
-Paintings made by AI agents over MCP. An agent gets an assignment (`get_assignment`): the canvas and
-an allowance of strokes. It uses them (`submit_stroke`), then gets the next assignment. AgentPaint
-measures that closed loop: the same painting, reference and stroke budget painted with the agent
-seeing the canvas before every stroke, every k strokes, or once for the whole painting, scored
-against the reference after every stroke, across a ladder of models. Public pages show every
-painting, its stroke-by-stroke history and its scores.
+AgentPaint lets an AI agent paint with real brush strokes, then shows you how it went. You create a
+painting, connect an agent to it over MCP, and watch it work stroke by stroke. Give it a reference
+image and every stroke is scored against it, so you can compare models and see whether letting an
+agent look at its own work more often makes it paint better.
 
-Runs on Cloudflare Workers. The paint simulation is Rust compiled to WebAssembly.
+Live site: https://agentpaint.pavlov-5eb.workers.dev
 
-## Try it
+## Using it
 
-The site has two areas. **Paintings** (`/`) is a gallery of paintings without a reference, with a
-form to start one from a style and an optional prompt. **Reference tests** (`/tests`) holds the
-runs against the built-in reference images: each test page compares every model that has painted
-that reference, under the same settings, against it.
+### Paint something with your agent
 
-Every painting is created first (from either area) and then painted by an agent over the
-painting's own MCP URL. For a reference run:
-
-1. Open a reference test and use **Start a run**: pick a size (`study` is quicker), a stroke budget
-   and how many strokes each assignment allows. The style starts as the selected condition's, or
-   the reference's own default (landscape for the sunset, abstract for the Mondrian and the
-   balloon).
-2. The painting's page shows its MCP URL and a ready-made command. In a terminal with Claude Code:
+1. On the **Paintings** page, create a painting: pick a style and describe what to paint.
+2. The painting's page shows its MCP URL and a ready-made command. With Claude Code:
 
    ```sh
    claude mcp add --transport http agentpaint-<id> <MCP URL>
    ```
 
-   then ask Claude to paint the AgentPaint painting until it is finished. Or run the bundled painter
-   (needs `ANTHROPIC_API_KEY` or `ant auth login`):
+   Then ask Claude to paint the AgentPaint painting until it's done. Any MCP client works the same
+   way: the painting has two tools, `get_assignment` and `submit_stroke`.
+3. Watch the canvas fill in, with the agent's note for every stroke. Afterwards, play it back with
+   the slider.
 
-   ```sh
-   bun run paint -- --url <MCP URL> --model claude-opus-5-5
-   ```
-3. Watch the painting page: the canvas updates as strokes land, with each stroke's note, think time
-   and score against the reference. Play it back with the slider.
-4. The test page (`/tests/<reference>`) shows the results table, one score chart per
-   strokes-per-assignment setting with a line per model, and the finished canvases. Runs are compared only with runs of the same
-   style, size, budget and finishing setting (below); a selector switches between those conditions. The model is whatever the
-   painter reports when it submits strokes; runs that report none show as "(not reported)".
+### Compare models on a reference
 
-A painting without a reference works the same way: create it with **New painting** on the home
-page (a style and an optional prompt), connect an agent to its MCP URL, and it shows in the gallery.
+**Reference tests** holds runs against built-in images (a sunset, a Mondrian and a hot-air balloon).
+Each run is a model painting the reference with a fixed stroke budget, under one setting for how
+often it sees the canvas:
 
-## How it works
+- **after every stroke**,
+- **every N strokes** (it places N strokes without seeing them land), or
+- **once, at the start** (it paints the whole budget blind).
 
+A test page puts the runs side by side: one lane per model, the finished canvases, and score charts
+per setting. To add a run, use **Start a run** on the test page and connect an agent as above. The
+run is listed under the model the agent reports.
+
+**Scores** go from 0 (a blank canvas) to 1 (identical to the reference), comparing colors on a 64×64
+grid. Each test page also shows what one flat average color would score, for scale.
+
+## Running experiments
+
+The bundled painter (`tools/painter`) paints with Claude through the Anthropic API. It needs
+`ANTHROPIC_API_KEY` or an `ant auth login` profile, and it costs real money: each assignment sends
+the canvas and the reference as images.
+
+Paint one painting:
+
+```sh
+bun run paint -- --url <MCP URL> --model claude-opus-5-5
+bun run paint -- --url <MCP URL> --random        # random strokes, no API calls
 ```
-agent ──MCP──▶ Worker (Hono, apps/worker)
-   /mcp/p/<id>/<key>  one painting               ├─ Registry DO (one): paintings, series
-                                                 └─ Painting DO (one per painting): stroke log, assignments,
-                                                       WASM canvas, reference grid
-                                                       ├─ renderer.wasm (crates/renderer)
-                                                       └─ R2: JPEG per stroke, checkpoints, reference
-browser ──▶ pages (apps/worker/public) + /api/paintings, /api/series, /api/tests
+
+Paint a whole comparison (every model × setting) in one batch:
+
+```sh
+bun run matrix -- --url https://agentpaint.pavlov-5eb.workers.dev \
+  --models claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5-5 \
+  --per-assignment 1,20,all --reference krita-sunset --size study --no-finish
 ```
 
-- **Ordering.** Each painting is a Durable Object, so its requests run one at a time; checking a
-  token and applying its strokes happen with no `await` in between.
-- **Endpoints.** `POST /api/paintings` creates a painting and returns its agent key, owner key and
-  MCP URL. The agent key is in the URL's path (`/mcp/p/<id>/<key>`), for clients that can't set
-  headers, or sent as a Bearer token to `/mcp/p/<id>`. The owner key, as a Bearer token, ends the
-  painting (`POST /api/paintings/<id>/finish`) or runs the replay check
-  (`POST /api/paintings/<id>/verify`). Read-only: `GET /api/paintings` (the gallery, paintings
-  without a reference), `/api/paintings/<id>`, `/api/paintings/<id>/strokes`,
-  `/api/paintings/<id>/v/<n>` (snapshot after stroke n), `/api/series/<id>`, `/api/tests` and
-  `/api/tests/<reference>`.
-- **Assignments.** A token belongs to one painting at one version. Rejected strokes
-  (`invalid_stroke`) keep the token usable. If another stroke lands first, the submit gets
-  `stale_assignment`.
-- **Durability.** Strokes are stored in the painting's SQLite storage. The paint buffer is
-  checkpointed to R2 every 20 strokes; after an eviction the canvas is rebuilt from the checkpoint
-  plus the newer strokes, deterministically (byte-identical snapshots).
-- **Memory.** A painting's canvas holds about 10 MB of WASM memory while it is being painted, and
-  Durable Objects can share a 128 MB isolate. Canvases are freed after `CANVAS_IDLE_SECONDS` without
-  requests (default 600, after saving a checkpoint). If the renderer ever traps, the WASM instance is reset, the canvas rebuilds
-  from storage, and the agent gets `temporary_failure` with its token still valid.
-- **Styles.** Each painting has a style (figurative, landscape, abstract, minimalist) that sets its
-  default stroke budget. Creative choices stay with the agents.
+| Flag               | Meaning                                                                    |
+| ------------------ | -------------------------------------------------------------------------- |
+| `--models`         | Model ids. Each runs at its own default effort unless you pass `--effort`. |
+| `--per-assignment` | Strokes between views of the canvas: numbers, or `all` for one view.       |
+| `--reference`      | `krita-sunset`, `mondrian-composition-ii` or `cappadocia-balloon`.         |
+| `--size`           | `study` (512 px wide, cheaper) or `full` (1024 px).                        |
+| `--max-strokes`    | Stroke budget; defaults to the style's.                                    |
+| `--no-finish`      | The agent can't end a painting early, so every run uses its full budget.   |
+| `--repeat`         | Runs per model and setting.                                                |
 
-### Renderer
+The matrix prints a results table and a link to the test page filtered to the batch. It saves the
+paintings' keys to `.matrix/<series>.json` and each model's thinking summaries to
+`.matrix/thinking/<painting>.jsonl`.
 
-- [hokusai](https://github.com/reearth/hokusai) (Apache-2.0, a pure-Rust libmypaint port) places
-  dabs from the stroke path and pressure, using an acrylic brush configured from libmypaint defaults.
-- Each stroke builds its own per-pixel coverage, driven by `flow` and capped at `opacity`, then
-  mixes into the paint once at the end of the stroke. An opaque stroke always covers what is under
-  it.
-- Colors mix like pigment, using Mixbox. **Mixbox is CC BY-NC 4.0, non-commercial use only.**
-  `bun tooling/build-wasm.ts --spectral` builds with hokusai's spectral model instead (Apache-2.0),
-  which is more muted and lets saturated blues and greens shift slightly under many thin layers of
-  the same color. Scores from the two builds aren't comparable.
-- The canvas has a woven texture, and paint thickness drives impasto lighting.
-- Each pixel stores 10 bytes (16-bit linear RGB, coverage, thickness); a 1024² checkpoint is a few MB
-  compressed. Snapshots are JPEG (quality 90): the canvas weave makes PNGs about 8x larger.
+Every assignment starts a new conversation, so the canvas is the only thing an agent carries over
+from earlier ones. The prompts are fixed and hashed, and every stroke records the hash, the model and
+the token counts.
 
-## Layout
+To check that a batch's paintings rebuild exactly from their stroke logs:
 
-| Path              | What                                                                                   |
-| ----------------- | -------------------------------------------------------------------------------------- |
-| `crates/renderer` | Rust renderer → WASM (`examples/render.rs` renders a stroke JSON file to PNG natively) |
-| `apps/worker`     | Cloudflare Worker: routes, MCP tools, Durable Objects, pages, reference images         |
-| `tools/painter`   | Bun CLI that paints a painting with Claude (or random strokes) through its MCP URL     |
-| `tooling`         | WASM build, Rust install for CI, end-to-end and replay checks                          |
+```sh
+bun tooling/replay-check.ts --keys .matrix/<series>.json
+```
 
-## Requirements
+## Building and running locally
 
-- Bun 1.4.4+
-- Rust via rustup. `rust-toolchain.toml` pins the version and the `wasm32-unknown-unknown` target.
-  `bun run build:wasm` downloads the matching `wasm-bindgen` CLI into `.tools/` (checksum-verified).
-
-## Local development
+You need [Bun](https://bun.sh) 1.4.4+ and Rust via rustup (`rust-toolchain.toml` pins the version
+and the WebAssembly target).
 
 ```sh
 bun install
-bun run dev            # wrangler dev on :8787 with local Durable Objects and R2
+bun run dev        # http://127.0.0.1:8787, with local storage
 ```
 
-The gallery is at http://127.0.0.1:8787/. Each painting's page shows its MCP URL. Local state lives
-in `apps/worker/.wrangler/state`; delete it to start over.
+`bun run dev` compiles the Rust renderer to WebAssembly first. Local data lives in
+`apps/worker/.wrangler/state`; delete it to start over.
 
 Checks:
 
 ```sh
-bun run check          # Biome
+bun run check      # lint and format
 bun run typecheck
-bun run test           # Worker unit tests + Rust tests
-bun run test:e2e       # against a running `bun run dev` (AGENTPAINT_URL to override)
-bun tooling/replay-check.ts --keys .matrix/<series>.json   # stroke log replays byte for byte
+bun run test       # unit tests and Rust tests
+bun run test:e2e   # against a running `bun run dev`
 ```
 
-## Painting
+| Path              | What's there                                                                                                                     |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/worker`     | The Cloudflare Worker: pages, API, MCP tools, storage, reference images                                                          |
+| `crates/renderer` | The paint engine (Rust, compiled to WebAssembly), the scorer, and tools for preparing references and a greedy non-model baseline |
+| `tools/painter`   | The painter and matrix CLIs                                                                                                      |
+| `tooling`         | WebAssembly build, end-to-end and replay checks                                                                                  |
 
-A painting, through its MCP URL, until it is finished:
+## Deploying
+
+AgentPaint runs on Cloudflare Workers with Durable Objects and R2, and needs the Workers Paid plan
+(rendering a stroke takes more CPU than the free plan allows).
 
 ```sh
-bun run paint -- --url <MCP URL> --model claude-opus-5-5 [--effort high]
-bun run paint -- --url <MCP URL> --random          # random strokes, no Claude
+cd apps/worker
+bunx wrangler r2 bucket create agentpaint-snapshots
+bunx wrangler r2 bucket create agentpaint-snapshots-preview
+bunx wrangler deploy
 ```
 
-With a URL of the form `/mcp/p/<id>` (no key in the path), the painter sends `AGENTPAINT_AGENT_KEY` as
-the agent key.
+To deploy from GitHub instead, import the repository in **Workers & Pages** with build command
+`bash tooling/install-rust.sh` and deploy command `bunx wrangler deploy -c apps/worker/wrangler.jsonc`.
 
-Painting with Claude costs real money: every assignment sends the canvas (and the reference) as
-images. Without `--effort`, no effort is sent and each model runs at its own default effort.
-Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
+Anyone can view the site and create paintings. Creation is rate-limited per address, and paintings
+that go unpainted expire. A painting's MCP URL contains its key, so request logging is turned off.
+Each stroke keeps a JPEG snapshot in R2 for playback, about 50–300 KB.
 
-## Experiments
+## Credits
 
-- **Batches of runs.** `bun run matrix` creates its paintings as one series; the test page shows
-  just that batch with `?series=<id>`, and `GET /api/series/<id>` returns its results table.
-  `GET /api/tests/<reference>` returns a test's runs, score curves and table.
-- **Assignments.** A painting's `strokes_per_assignment` sets how many strokes one
-  assignment allows. An assignment's token carries that allowance; while strokes remain,
-  `get_assignment` returns the same token with no images, so the server, not the client, rations
-  what the painter sees. The metadata and every `submit_stroke` reply give both counts:
-  `assignment_strokes_remaining` (strokes this assignment still allows) and
-  `painting_strokes_remaining` (strokes left in the painting's budget). Strokes go in one at a time
-  or in batches (up to the remaining allowance, 50 per call); a batch is validated as a whole before
-  any of it applies. An assignment's token stays valid for 10 minutes plus 30 seconds per allowed stroke
-  (at most two hours), refreshed after each accepted batch.
-- **Finishing early.** By default `submit_stroke` takes `finished: true`, which ends the painting
-  early; the budget is a ceiling. A painting created with `allow_finish: false` ("Agent can end the
-  painting early" unchecked in the form, `--no-finish` in `matrix`) ends only when its budget is
-  used: its `submit_stroke` has no `finished` input and its tool descriptions don't mention
-  finishing, and a `finished: true` sent anyway is rejected as `invalid_stroke` with nothing
-  applied. The bundled painter reads the setting from `GET /api/paintings/<id>` and uses a prompt
-  variant without finishing, which has its own prompt hash. The setting is part of a test's
-  condition.
-- **Score.** After every stroke the canvas (a flat composite: no weave, no lighting) and the
-  reference are averaged down to 64x64 in linear light, converted to OKLab, and compared cell by
-  cell: score = 1 − mean OKLab distance, clamped to 0..1. It is stored with the stroke and never
-  sent to the painter. The API returns this raw score. The pages and `matrix` show it rescaled
-  so that 0 is a blank canvas and 1 is identical: `(score − blank) / (1 − blank)`. For scale, a
-  canvas filled with the reference's average color is shown too (0.54 on the sunset study).
-- **Stroke log.** `GET /api/paintings/<id>/strokes`: per stroke, the assignment it belongs to, think
-  time (server-measured: submit time minus the time the assignment was handed out), score, the painter's note, and
-  self-reported model, effort, token counts and prompt hash. The bundled painter reports the model
-  named in each API response, the effort it actually sent, tokens spent since its previous
-  submission, and a hash of its prompts (`tools/painter/src/prompt.ts`), which are identical for
-  every model and strokes-per-assignment setting.
-- **Model ladders.** `bun run matrix` creates one series and paints every model × strokes per
-  assignment × repeat, several at once, then prints the results table (also at `GET /api/series/<id>`):
-
-  ```sh
-  bun run matrix -- --url http://127.0.0.1:8787 \
-    --models claude-haiku-4-5,claude-sonnet-5-5,claude-opus-5-5 --per-assignment 1,20,all \
-    --reference krita-sunset --size study --repeat 2 --parallel 3
-  ```
-
-  `--per-assignment` takes numbers or `all` (the whole budget in one assignment). With `--reference`
-  and no `--style`, the style is the reference's default (from `GET /api/references`); without a
-  reference it is landscape. `--max-strokes` overrides the style's budget. Each model gets
-  only the parameters it supports (from the Models API): adaptive thinking where supported,
-  otherwise extended thinking with `--thinking-budget` tokens, with summarized thinking either way;
-  effort only when `--effort` is given and the model supports that level, so by default each model
-  runs at its own default effort. No fallback model is used. Every assignment is a new
-  conversation, so the canvas is the only thing an assignment carries over from earlier ones. Keys
-  for the paintings are saved to `.matrix/<series>.json`, and each assignment's thinking
-  summaries to `.matrix/thinking/<painting id>.jsonl`.
-- **Greedy baseline.** A non-model reference point: for each stroke of the budget it tries random
-  candidate strokes (same format and brush, color sampled from the reference, brush size shrinking
-  from coarse to fine) and keeps the one that raises the score most. On the sunset study (512 px,
-  250 strokes, 24 candidates) it reaches 0.81 on the pages' scale (raw 0.954), where one flat
-  average color scores 0.54:
-
-  ```sh
-  cargo run --release -p agentpaint-renderer --example greedy_baseline -- \
-    apps/worker/public/references/krita-sunset.png 512 250 24 greedy.png
-  ```
-- **Replay check.** `bun tooling/replay-check.ts --keys .matrix/<series>.json` has each painting
-  rebuild its canvas from the stroke log (from scratch and from its checkpoint) and compare it byte
-  for byte with the stored snapshot.
-
-## Deploying to Cloudflare
-
-Needs the Workers Paid plan: rendering a stroke takes tens of milliseconds of CPU.
-
-1. Create the buckets:
-
-   ```sh
-   cd apps/worker
-   bunx wrangler r2 bucket create agentpaint-snapshots
-   bunx wrangler r2 bucket create agentpaint-snapshots-preview
-   ```
-2. Connect the GitHub repo in **Workers & Pages → Create → Import a repository**, with:
-   - Root directory: `/`
-   - Build command: `bash tooling/install-rust.sh`
-   - Deploy command: `bunx wrangler deploy -c apps/worker/wrangler.jsonc`
-   - Preview command (non-production branches): `bunx wrangler preview -c apps/worker/wrangler.jsonc`
-
-   The build image has no Rust, so `install-rust.sh` installs the pinned toolchain; Wrangler's build
-   step then compiles the WASM (about two minutes per build).
-3. Push a branch: Workers Builds posts the Preview URL on the pull request. Each Preview gets its
-   own Durable Objects (its own paintings) and uses the preview bucket.
-
-Preview URLs are public, like the gallery, and anyone can create paintings on them. Put previews
-behind Cloudflare Access if you want them private.
-
-### Hardening checklist
-
-- Don't let Workers Builds build pull requests from forks; the build installs Rust and downloads
-  wasm-bindgen.
-- Add an R2 lifecycle rule that expires objects in `agentpaint-snapshots-preview`
-  (`wrangler r2 bucket lifecycle add`), since previews never clean up after themselves.
-- On a custom domain, add a WAF rate-limiting rule for `/api/*`. The public API is cached at the edge
-  for a few seconds, but a flood of distinct URLs still reaches the Worker.
-- The MCP endpoint rejects JSON-RPC batches, and an assignment's token works only on its own
-  painting.
-
-Snapshots are JPEGs kept for every stroke (100-300 KB each), so a finished 800-stroke painting is
-roughly 100-250 MB in R2. `POST /api/paintings` is public and limited to 20 per minute per IP. At
-most `MAX_CREATED_PAINTINGS` (default 100) paintings are in progress at once, and at most
-`MAX_CREATED_PER_CLIENT` (default 30) from one client; the Registry stores only a salted hash of the
-client's address. A painting with no stroke after an hour expires, and one with no stroke for
-`CREATED_IDLE_SECONDS` (default 6 hours) is finished as it stands. Painting ids are public, so a
-painting's MCP endpoint limits each client to 120 requests a minute before checking the key, and the
-painting to 120 a minute after. Invocation logs are off because a painting's agent key is part of its
-MCP URL.
-
-## Third-party notices
-
-- The built-in reference images, resized with `crates/renderer/examples/prepare_reference.rs` into
-  `apps/worker/public/references/`:
+- Brush engine: [hokusai](https://github.com/reearth/hokusai) (Apache-2.0).
+- Color mixing: [Mixbox](https://github.com/scrtwpns/mixbox) (CC BY-NC 4.0, non-commercial use
+  only). `bun tooling/build-wasm.ts --spectral` builds with hokusai's spectral mixing instead.
+- JPEG encoding: `jpeg-encoder`, based in part on the work of the Independent JPEG Group.
+- Reference images, resized:
   - [Sunset - Landscape digital painting made in Krita](https://commons.wikimedia.org/wiki/File:Sunset_-_Landscape_digital_painting_made_in_krita.png)
     by Raghukamath, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/).
   - [Composition II in Red, Blue, and Yellow](https://commons.wikimedia.org/wiki/File:Piet_Mondriaan,_1930_-_Mondrian_Composition_II_in_Red,_Blue,_and_Yellow.jpg)
     by Piet Mondrian (1930), public domain.
   - [Cappadocia Balloon Inflating](https://commons.wikimedia.org/wiki/File:Cappadocia_Balloon_Inflating_Wikimedia_Commons.JPG)
     by Benh LIEU SONG, [CC BY-SA 3.0](https://creativecommons.org/licenses/by-sa/3.0/).
-- hokusai (Apache-2.0) provides the brush engine.
-- JPEG encoding uses `jpeg-encoder`, which is based in part on the work of the Independent JPEG Group.
-- Color mixing uses [Mixbox](https://github.com/scrtwpns/mixbox) (CC BY-NC 4.0, non-commercial
-  use only); the `--spectral` build doesn't.
