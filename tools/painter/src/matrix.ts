@@ -4,7 +4,7 @@
 //
 //   bun src/matrix.ts --url http://127.0.0.1:8787 \
 //     --models claude-haiku-4-5,claude-sonnet-5-5,claude-opus-5-5 --per-assignment 1,20,all \
-//     --style landscape --reference krita-sunset --size study --repeat 2 --parallel 3
+//     --reference krita-sunset --size study --repeat 2 --parallel 3
 
 import { parseArgs } from "node:util";
 import Anthropic from "@anthropic-ai/sdk";
@@ -12,7 +12,7 @@ import { EFFORTS, type Effort } from "./capabilities";
 import { fail, positiveInt } from "./cli";
 import type { Json } from "./mcp";
 import { type PaintSummary, paintScoped } from "./paint";
-import { PROMPT_HASH } from "./prompt";
+import { promptsFor } from "./prompt";
 import { thinkingLog } from "./thinking-log";
 
 const { values: args } = parseArgs({
@@ -20,7 +20,7 @@ const { values: args } = parseArgs({
     url: { type: "string", default: "http://127.0.0.1:8787" },
     models: { type: "string", default: "claude-opus-5-5" },
     "per-assignment": { type: "string", default: "1,20,all" },
-    style: { type: "string", default: "landscape" },
+    style: { type: "string" },
     reference: { type: "string" },
     prompt: { type: "string" },
     size: { type: "string", default: "study" },
@@ -29,6 +29,7 @@ const { values: args } = parseArgs({
     parallel: { type: "string", default: "3" },
     effort: { type: "string" },
     "thinking-budget": { type: "string", default: "8000" },
+    "no-finish": { type: "boolean", default: false },
     random: { type: "boolean", default: false },
     help: { type: "boolean", short: "h" },
   },
@@ -41,11 +42,12 @@ if (args.help) {
   --models         comma-separated model ids (ignored with --random)
   --per-assignment strokes per assignment, comma-separated; "all" = the whole budget in one assignment
                    (default 1,20,all)
-  --style          painting style (default landscape)
+  --style          painting style (default: the reference's style, else landscape)
   --reference      built-in reference id (e.g. krita-sunset)
   --prompt         subject text (default: none)
   --size           full | study (default study)
   --max-strokes    stroke budget (default: the style's for the size)
+  --no-finish      the agent can't end its paintings early; each ends when its budget is used
   --repeat         paintings per cell (default 1)
   --parallel       paintings painted at once (default 3)
   --effort         ${EFFORTS.join(" | ")}, sent only where supported (default: none sent, so each
@@ -60,12 +62,24 @@ if (effort !== null && !EFFORTS.includes(effort)) fail(`--effort must be one of 
 const repeat = positiveInt(args.repeat, "--repeat");
 const parallel = positiveInt(args.parallel, "--parallel");
 const thinkingBudget = positiveInt(args["thinking-budget"], "--thinking-budget");
+const allowFinish = !args["no-finish"];
+const prompts = promptsFor(allowFinish);
 
+let styleName = args.style ?? "landscape";
+if (args.reference && !args.style) {
+  const references = (await (await fetch(`${origin}/api/references`)).json()) as {
+    id: string;
+    style: string;
+  }[];
+  const reference =
+    references.find((r) => r.id === args.reference) ?? fail(`unknown reference ${args.reference}`);
+  styleName = reference.style;
+}
 const styles = (await (await fetch(`${origin}/api/styles`)).json()) as {
   name: string;
   max_strokes: { full: number; study: number };
 }[];
-const style = styles.find((s) => s.name === args.style) ?? fail(`unknown style ${args.style}`);
+const style = styles.find((s) => s.name === styleName) ?? fail(`unknown style ${styleName}`);
 const size = args.size === "full" ? "full" : "study";
 const budget = args["max-strokes"]
   ? positiveInt(args["max-strokes"], "--max-strokes")
@@ -118,18 +132,20 @@ async function create(settings: Record<string, unknown>) {
 
 console.log(
   `Matrix: ${models.length} model(s) x ${perAssignment.length} strokes-per-assignment setting(s) x ${repeat} = ${cells.length} paintings; ` +
-    `${args.style}, ${size}, budget ${budget}, effort ${effort ?? "default"}, prompts ${PROMPT_HASH}`,
+    `${style.name}, ${size}, budget ${budget}, ${allowFinish ? "agent can end early" : "no finishing"}, ` +
+    `effort ${effort ?? "default"}, prompts ${prompts.hash}`,
 );
 
 let series: { id: string; key: string } | null = null;
 for (const cell of cells) {
   const body = await create({
-    style: args.style,
+    style: style.name,
     prompt: args.prompt ?? null,
     reference: args.reference ?? null,
     size,
     max_strokes: budget,
     strokes_per_assignment: cell.strokesPerAssignment,
+    allow_finish: allowFinish,
     ...(series ? { series: series.id, series_key: series.key } : {}),
   });
   series ??= { id: body.series_id, key: body.series_key };
@@ -172,6 +188,7 @@ await Promise.all(
         cell.summary = await paintScoped(anthropic, {
           mcpUrl: new URL(cell.mcpUrl as string),
           random: args.random,
+          allowFinish,
           model: cell.model,
           effort,
           thinkingBudget,

@@ -12,8 +12,9 @@ import { parseArgs } from "node:util";
 import Anthropic from "@anthropic-ai/sdk";
 import { EFFORTS, type Effort } from "./capabilities";
 import { fail, positiveInt } from "./cli";
+import type { Json } from "./mcp";
 import { paintScoped } from "./paint";
-import { PROMPT_HASH } from "./prompt";
+import { promptsFor } from "./prompt";
 import { thinkingLog } from "./thinking-log";
 
 const { values: args } = parseArgs({
@@ -67,14 +68,20 @@ const bearer = withKey ? undefined : process.env.AGENTPAINT_AGENT_KEY;
 if (!withKey && !bearer)
   fail("this URL has no key in its path; set AGENTPAINT_AGENT_KEY to the painting's agent key");
 const paintingId = url.pathname.split("/")[3] as string;
+// Whether the agent can end the painting early picks the prompts.
+const info = await fetch(`${url.origin}/api/paintings/${paintingId}`);
+if (!info.ok) fail(`GET /api/paintings/${paintingId} returned ${info.status}`);
+const allowFinish = ((await info.json()) as Json).allowFinish === true;
 console.log(
-  `Painting ${paintingId}: ${args.random ? "random strokes" : `${model}, effort ${effortLabel}, a new conversation per assignment`}, prompts ${PROMPT_HASH}`,
+  `Painting ${paintingId}: ${args.random ? "random strokes" : `${model}, effort ${effortLabel}, a new conversation per assignment`}, ` +
+    `${allowFinish ? "agent can end it early" : "ends when its budget is used"}, prompts ${promptsFor(allowFinish).hash}`,
 );
 const thoughts = thinkingLog(paintingId);
 const summary = await paintScoped(anthropic, {
   mcpUrl: url,
   bearer,
   random: args.random,
+  allowFinish,
   model,
   effort,
   thinkingBudget,

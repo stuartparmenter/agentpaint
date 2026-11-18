@@ -1,6 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { createdIdleMs, type SizeName } from "./config";
 import { constantTimeEqual, KEY_LENGTH, PAINTING_ID_LENGTH, randomId, sha256Hex } from "./ids";
+import { addAllowFinishColumn } from "./schema";
 import type { StyleName } from "./styles";
 import type { CreateSettings, PaintingStats, PaintingStatus, PaintingSummary } from "./types";
 
@@ -19,6 +20,7 @@ interface Row extends Record<string, SqlStorageValue> {
   series_id: string;
   size: string;
   strokes_per_assignment: number;
+  allow_finish: number;
   reference: string | null;
   blank_score: number | null;
   mean_color_score: number | null;
@@ -46,6 +48,7 @@ function toSummary(r: Row): PaintingSummary {
     seriesId: r.series_id,
     size: r.size as SizeName,
     strokesPerAssignment: r.strokes_per_assignment,
+    allowFinish: r.allow_finish === 1,
     reference: r.reference,
     blankScore: r.blank_score,
     meanColorScore: r.mean_color_score,
@@ -60,8 +63,8 @@ function toSummary(r: Row): PaintingSummary {
 
 /** Every column a summary reads (all but the creator's address hash). */
 const COLUMNS = `id, status, style, prompt, width, height, stroke_count, max_strokes, created_at, last_stroke_at,
-  finished_at, series_id, size, strokes_per_assignment, reference, blank_score, mean_color_score, last_score,
-  assignments, mean_think_ms, tokens_in, tokens_out, models`;
+  finished_at, series_id, size, strokes_per_assignment, allow_finish, reference, blank_score, mean_color_score,
+  last_score, assignments, mean_think_ms, tokens_in, tokens_out, models`;
 
 export type CreateResult =
   | { ok: true; painting: PaintingSummary; seriesId: string; seriesKey: string | null }
@@ -105,6 +108,7 @@ export class Registry extends DurableObject<Env> {
       series_id TEXT NOT NULL,
       size TEXT NOT NULL,
       strokes_per_assignment INTEGER NOT NULL,
+      allow_finish INTEGER NOT NULL,
       reference TEXT,
       blank_score REAL,
       mean_color_score REAL,
@@ -116,6 +120,7 @@ export class Registry extends DurableObject<Env> {
       models TEXT NOT NULL DEFAULT '[]',
       creator TEXT
     )`);
+    addAllowFinishColumn(this.sql, "paintings");
     this.sql.exec("CREATE INDEX IF NOT EXISTS paintings_status ON paintings (status, last_stroke_at)");
     this.sql.exec("CREATE INDEX IF NOT EXISTS paintings_series ON paintings (series_id)");
     // Salt for hashing client addresses; it never leaves this object.
@@ -187,8 +192,8 @@ export class Registry extends DurableObject<Env> {
     const id = randomId(PAINTING_ID_LENGTH);
     this.sql.exec(
       `INSERT INTO paintings (id, status, style, prompt, width, height, max_strokes, created_at,
-        series_id, size, strokes_per_assignment, reference, blank_score, mean_color_score, creator)
-       VALUES (?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        series_id, size, strokes_per_assignment, allow_finish, reference, blank_score, mean_color_score, creator)
+       VALUES (?, 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       id,
       settings.style,
       settings.prompt,
@@ -199,6 +204,7 @@ export class Registry extends DurableObject<Env> {
       seriesId,
       settings.size,
       settings.strokesPerAssignment,
+      settings.allowFinish ? 1 : 0,
       settings.reference,
       settings.blankScore,
       settings.meanColorScore,

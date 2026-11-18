@@ -1,11 +1,15 @@
 // The create form. On the home page it asks for a style and prompt, with the
-// stroke budget and strokes per assignment under "More options". On a reference test
-// page it fixes the reference and prefills the test's condition.
+// stroke budget, strokes per assignment and whether the agent can end the painting
+// early under "More options". On a reference test page it fixes the reference and
+// prefills the test's condition.
 
 import { el, getJson, paintingKey, saveJson } from "./common.js";
 
 const ASSIGNMENT_HELP =
   "Each assignment shows the agent the canvas and allows this many strokes; it sees the result at the next assignment. 1 = it sees the canvas before every stroke; equal to max strokes = it sees the canvas once, at the start.";
+
+const FINISH_HELP =
+  "Unchecked, submit_stroke has no finished option and the painting ends when its stroke budget is used.";
 
 let counter = 0;
 
@@ -29,6 +33,19 @@ function field(labelText, control, help) {
 
 const option = (v) => el("option", { value: v, textContent: v[0].toUpperCase() + v.slice(1) });
 
+function checkboxField(labelText, control, help) {
+  control.id ||= `f${++counter}`;
+  const helpEl = el("div", { className: "help", id: `${control.id}-help`, textContent: help });
+  control.setAttribute("aria-describedby", helpEl.id);
+  return el("div", { className: "field" }, [
+    el("div", { className: "check" }, [
+      control,
+      el("label", { htmlFor: control.id, textContent: labelText }),
+    ]),
+    helpEl,
+  ]);
+}
+
 function select(name, options, value) {
   const s = el("select", { name }, options.map(option));
   s.value = options.includes(value) ? value : options[0];
@@ -50,8 +67,8 @@ function numberInput(name, value, placeholder) {
 /**
  * Builds the form.
  * @param {object} [options]
- * @param {object} [options.prefill] {style, prompt, max_strokes, strokes_per_assignment}
- * @param {object} [options.test] {reference, style, size, max_strokes}: test mode
+ * @param {object} [options.prefill] {style, prompt, max_strokes, strokes_per_assignment, allow_finish}
+ * @param {object} [options.test] {reference, style, size, max_strokes, allow_finish}: test mode
  */
 export function createForm({ prefill = {}, test = null } = {}) {
   // The style options arrive with the styles; the first is the default.
@@ -67,6 +84,11 @@ export function createForm({ prefill = {}, test = null } = {}) {
   const maxStrokes = numberInput("max_strokes", test?.max_strokes ?? prefill.max_strokes, "Style default");
   const perAssignment = numberInput("strokes_per_assignment", prefill.strokes_per_assignment ?? 1);
   perAssignment.required = true;
+  const allowFinish = el("input", {
+    type: "checkbox",
+    name: "allow_finish",
+    checked: (test?.allow_finish ?? prefill.allow_finish) !== false,
+  });
 
   // The max strokes placeholder shows the budget the API applies when it's empty.
   async function syncBudget() {
@@ -87,7 +109,10 @@ export function createForm({ prefill = {}, test = null } = {}) {
   });
 
   const assignmentField = field("Strokes per assignment", perAssignment, ASSIGNMENT_HELP);
-  const moreOpen = Boolean(prefill.max_strokes || Number(prefill.strokes_per_assignment) > 1);
+  const finishField = checkboxField("Agent can end the painting early", allowFinish, FINISH_HELP);
+  const moreOpen = Boolean(
+    prefill.max_strokes || Number(prefill.strokes_per_assignment) > 1 || prefill.allow_finish === false,
+  );
   const fields = test
     ? [
         assignmentField,
@@ -97,6 +122,7 @@ export function createForm({ prefill = {}, test = null } = {}) {
             field("Style", style),
             field("Size", size),
             field("Max strokes", maxStrokes),
+            finishField,
           ]),
         ]),
       ]
@@ -105,7 +131,11 @@ export function createForm({ prefill = {}, test = null } = {}) {
         field("Prompt (optional)", prompt),
         el("details", { className: "more", open: moreOpen }, [
           el("summary", { textContent: "More options" }),
-          el("div", { className: "more-body" }, [field("Max strokes", maxStrokes), assignmentField]),
+          el("div", { className: "more-body" }, [
+            field("Max strokes", maxStrokes),
+            assignmentField,
+            finishField,
+          ]),
         ]),
       ];
 
@@ -150,6 +180,7 @@ export function createForm({ prefill = {}, test = null } = {}) {
       return perAssignment.focus();
     }
     body.strokes_per_assignment = spl;
+    body.allow_finish = allowFinish.checked;
 
     submit.disabled = true;
     submit.textContent = "Creating…";
@@ -178,7 +209,7 @@ export function createForm({ prefill = {}, test = null } = {}) {
   return form;
 }
 
-const QUERY_KEYS = ["style", "prompt", "max_strokes", "strokes_per_assignment"];
+const QUERY_KEYS = ["style", "prompt", "max_strokes", "strokes_per_assignment", "allow_finish"];
 
 /** Prefill from `?style=…&prompt=…` on the home page, or null without one. */
 export function prefillFromQuery(search) {
@@ -186,6 +217,7 @@ export function prefillFromQuery(search) {
   if (!QUERY_KEYS.some((k) => q.has(k))) return null;
   const out = {};
   for (const k of QUERY_KEYS) if (q.has(k)) out[k] = q.get(k);
+  if ("allow_finish" in out) out.allow_finish = out.allow_finish !== "false";
   return out;
 }
 
@@ -196,6 +228,7 @@ export function prefillQuery(p) {
     prompt: p.prompt,
     max_strokes: p.maxStrokes,
     strokes_per_assignment: p.strokesPerAssignment,
+    allow_finish: p.allowFinish ? null : "false",
   };
   const q = new URLSearchParams();
   for (const [k, v] of Object.entries(values)) if (v !== null && v !== undefined && v !== "") q.set(k, v);

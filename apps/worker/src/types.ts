@@ -20,6 +20,8 @@ export interface PaintingSummary {
   seriesId: string;
   size: SizeName;
   strokesPerAssignment: number;
+  /** Whether the agent can end the painting before its stroke budget is used. */
+  allowFinish: boolean;
   reference: string | null;
   blankScore: number | null;
   meanColorScore: number | null;
@@ -42,6 +44,7 @@ export interface CreateSettings {
   height: number;
   maxStrokes: number;
   strokesPerAssignment: number;
+  allowFinish: boolean;
   reference: string | null;
   blankScore: number | null;
   meanColorScore: number | null;

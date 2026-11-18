@@ -20,7 +20,9 @@ Every painting is created first (from either area) and then painted by an agent 
 painting's own MCP URL. For a reference run:
 
 1. Open a reference test and use **Start a run**: pick a size (`study` is quicker), a stroke budget
-   and how many strokes each assignment allows.
+   and how many strokes each assignment allows. The style starts as the selected condition's, or
+   the reference's own default (landscape for the sunset, abstract for the Mondrian and the
+   balloon).
 2. The painting's page shows its MCP URL and a ready-made command. In a terminal with Claude Code:
 
    ```sh
@@ -37,7 +39,7 @@ painting's own MCP URL. For a reference run:
    and score against the reference. Play it back with the slider.
 4. The test page (`/tests/<reference>`) shows the results table, one score chart per
    strokes-per-assignment setting with a line per model, and the finished canvases. Runs are compared only with runs of the same
-   style, size and budget; a selector switches between those conditions. The model is whatever the
+   style, size, budget and finishing setting (below); a selector switches between those conditions. The model is whatever the
    painter reports when it submits strokes; runs that report none show as "(not reported)".
 
 A painting without a reference works the same way: create it with **New painting** on the home
@@ -157,8 +159,15 @@ Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
   `painting_strokes_remaining` (strokes left in the painting's budget). Strokes go in one at a time
   or in batches (up to the remaining allowance, 50 per call); a batch is validated as a whole before
   any of it applies. An assignment's token stays valid for 10 minutes plus 30 seconds per allowed stroke
-  (at most two hours), refreshed after each accepted batch. `finished: true` ends a painting early;
-  the budget is a ceiling.
+  (at most two hours), refreshed after each accepted batch.
+- **Finishing early.** By default `submit_stroke` takes `finished: true`, which ends the painting
+  early; the budget is a ceiling. A painting created with `allow_finish: false` ("Agent can end the
+  painting early" unchecked in the form, `--no-finish` in `matrix`) ends only when its budget is
+  used: its `submit_stroke` has no `finished` input and its tool descriptions don't mention
+  finishing, and a `finished: true` sent anyway is rejected as `invalid_stroke` with nothing
+  applied. The bundled painter reads the setting from `GET /api/paintings/<id>` and uses a prompt
+  variant without finishing, which has its own prompt hash. The setting is part of a test's
+  condition.
 - **Score.** After every stroke the canvas (a flat composite: no weave, no lighting) and the
   reference are averaged down to 64x64 in linear light, converted to OKLab, and compared cell by
   cell: score = 1 − mean OKLab distance, clamped to 0..1. It is stored with the stroke and never
@@ -177,10 +186,12 @@ Anthropic credentials come from `ANTHROPIC_API_KEY` or `ant auth login`.
   ```sh
   bun run matrix -- --url http://127.0.0.1:8787 \
     --models claude-haiku-4-5,claude-sonnet-5-5,claude-opus-5-5 --per-assignment 1,20,all \
-    --style landscape --reference krita-sunset --size study --repeat 2 --parallel 3
+    --reference krita-sunset --size study --repeat 2 --parallel 3
   ```
 
-  `--per-assignment` takes numbers or `all` (the whole budget in one assignment). Each model gets
+  `--per-assignment` takes numbers or `all` (the whole budget in one assignment). With `--reference`
+  and no `--style`, the style is the reference's default (from `GET /api/references`); without a
+  reference it is landscape. `--max-strokes` overrides the style's budget. Each model gets
   only the parameters it supports (from the Models API): adaptive thinking where supported,
   otherwise extended thinking with `--thinking-budget` tokens, with summarized thinking either way;
   effort only when `--effort` is given and the model supports that level, so by default each model

@@ -441,6 +441,86 @@ check(
   verified,
 );
 
+// --- A painting the agent can't end early ---------------------------------------
+
+const mentionsFinishing = (text: string | undefined) => /finish/i.test(text ?? "");
+const defaultSubmit = tools.tools.find((t) => t.name === "submit_stroke");
+check(
+  "by default the agent can end a painting early, and submit_stroke takes and describes finished",
+  q.settings?.allowFinish === true &&
+    "finished" in (defaultSubmit?.inputSchema.properties ?? {}) &&
+    mentionsFinishing(defaultSubmit?.description),
+  { settings: q.settings, submit: defaultSubmit },
+);
+
+const fixed = await create({
+  style: "landscape",
+  size: "study",
+  max_strokes: 3,
+  strokes_per_assignment: 3,
+  allow_finish: false,
+});
+check(
+  "creates a painting the agent can't end early",
+  fixed.status === 201 && fixed.body.settings?.allowFinish === false,
+  fixed,
+);
+const fixedClient = await connect(new URL(fixed.body.mcp_url));
+const fixedTools = (await fixedClient.listTools()).tools;
+const fixedSubmit = fixedTools.find((t) => t.name === "submit_stroke");
+check(
+  "its submit_stroke has no finished input",
+  !!fixedSubmit && !("finished" in (fixedSubmit.inputSchema.properties ?? {})),
+  fixedSubmit?.inputSchema,
+);
+check(
+  "its tools and instructions don't mention finishing",
+  fixedTools.length === 2 &&
+    fixedTools.every((t) => !mentionsFinishing(t.description)) &&
+    !mentionsFinishing(fixedClient.getInstructions()),
+  fixedTools.map((t) => t.description),
+);
+const fixedMeta = (await scopedCall(fixedClient, "get_assignment")).json;
+const finishAnyway = await scopedCall(fixedClient, "submit_stroke", {
+  token: fixedMeta.token,
+  strokes: [studyStroke(20, 40)],
+  finished: true,
+});
+check(
+  "finished: true sent anyway is rejected as an invalid submission and applies nothing",
+  finishAnyway.result.isError === true &&
+    finishAnyway.json?.reason === "invalid_stroke" &&
+    /stroke budget/.test(finishAnyway.json?.detail ?? "") &&
+    finishAnyway.json?.applied_count === 0 &&
+    finishAnyway.json?.stroke_count === 0 &&
+    finishAnyway.json?.status === "active" &&
+    finishAnyway.json?.assignment_strokes_remaining === 3,
+  finishAnyway.json,
+);
+const finishWithoutStrokes = await scopedCall(fixedClient, "submit_stroke", {
+  token: fixedMeta.token,
+  finished: true,
+});
+check(
+  "finished: true without strokes is rejected the same way",
+  finishWithoutStrokes.json?.reason === "invalid_stroke" &&
+    /stroke budget/.test(finishWithoutStrokes.json?.detail ?? "") &&
+    finishWithoutStrokes.json?.status === "active",
+  finishWithoutStrokes.json,
+);
+const wholeBudget = await scopedCall(fixedClient, "submit_stroke", {
+  token: fixedMeta.token,
+  strokes: [studyStroke(20, 40), studyStroke(40, 120), studyStroke(60, 160)],
+});
+check(
+  "the same token then paints, and the painting ends when its budget is used",
+  wholeBudget.json?.applied_count === 3 && wholeBudget.json?.status === "done",
+  wholeBudget.json,
+);
+await fixedClient.close();
+const fixedLog = (await (await fetch(`${base}/api/paintings/${fixed.body.id}/strokes`)).json()) as Json[];
+check("its stroke log has only the budget's strokes", fixedLog.length === 3, fixedLog.length);
+
 // --- Gallery API ---
 // The list is cached for a few seconds, so a painting made just now may not be in it yet.
 let gallery: { id: string; strokeCount: number }[] = [];

@@ -109,6 +109,7 @@ export async function createPainting(
     height,
     maxStrokes,
     strokesPerAssignment: input.strokes_per_assignment,
+    allowFinish: input.allow_finish,
     reference: reference?.id ?? null,
     blankScore: ref?.blankScore ?? null,
     meanColorScore: ref?.meanColorScore ?? null,

@@ -2,6 +2,8 @@
 // created against one; there are no uploads. A painting made with a reference
 // takes the reference's aspect ratio.
 
+import type { StyleName } from "./styles";
+
 export interface ReferenceImage {
   id: string;
   title: string;
@@ -10,6 +12,8 @@ export interface ReferenceImage {
   /** Pixel size of that PNG (the canvas aspect ratio follows it). */
   width: number;
   height: number;
+  /** The default style for a run against this reference. */
+  style: StyleName;
   artist: string;
   license: string;
   licenseUrl: string;
@@ -23,6 +27,7 @@ export const REFERENCES: readonly ReferenceImage[] = [
     file: "/references/krita-sunset.png",
     width: 1024,
     height: 576,
+    style: "landscape",
     artist: "Raghukamath",
     license: "CC BY-SA 4.0",
     licenseUrl: "https://creativecommons.org/licenses/by-sa/4.0/",
@@ -35,6 +40,7 @@ export const REFERENCES: readonly ReferenceImage[] = [
     file: "/references/mondrian-composition-ii.png",
     width: 1024,
     height: 1038,
+    style: "abstract",
     artist: "Piet Mondrian",
     license: "Public domain",
     licenseUrl: "https://creativecommons.org/publicdomain/mark/1.0/",
@@ -47,6 +53,7 @@ export const REFERENCES: readonly ReferenceImage[] = [
     file: "/references/cappadocia-balloon.png",
     width: 1024,
     height: 683,
+    style: "abstract",
     artist: "Benh LIEU SONG",
     license: "CC BY-SA 3.0",
     licenseUrl: "https://creativecommons.org/licenses/by-sa/3.0/",

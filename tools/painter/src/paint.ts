@@ -12,7 +12,7 @@ import type { Client } from "@modelcontextprotocol/client";
 import { MAX_BATCH } from "../../../apps/worker/src/config";
 import { type Effort, type ModelParams, paramsFor, requestFields } from "./capabilities";
 import { callTool, connect, firstJson, type Json, type McpContent } from "./mcp";
-import { ASSIGNMENT_TURN, PROMPT_HASH, SYSTEM_PROMPT } from "./prompt";
+import { type Prompts, promptsFor } from "./prompt";
 import { type AssignmentMeta, randomStroke } from "./random";
 
 /** Fields the painter fills in itself; hidden from the model's view of submit_stroke. */
@@ -23,6 +23,8 @@ export interface PaintOptions {
   /** Bearer token, for a URL without the key in its path. */
   bearer?: string;
   random: boolean;
+  /** Whether the painting lets the agent end it early; picks the prompts. */
+  allowFinish: boolean;
   model: string;
   /** Null sends no effort, so the model runs at its default. */
   effort: Effort | null;
@@ -141,17 +143,18 @@ class Tracker {
 export async function paintScoped(anthropic: Anthropic | null, opts: PaintOptions): Promise<PaintSummary> {
   const mcp = await connect(opts.mcpUrl, opts.bearer);
   const t = new Tracker();
+  const prompts = promptsFor(opts.allowFinish);
   let sent: ModelParams["sent"] | null = null;
   let stopReason = "finished";
   try {
     if (opts.random) {
-      stopReason = await paintRandom(mcp, t, opts);
+      stopReason = await paintRandom(mcp, t, prompts, opts);
     } else {
       if (!anthropic) throw new Error("painting with Claude needs an Anthropic client");
       const params = await paramsFor(anthropic, opts.model, opts.effort, opts.thinkingBudget);
       sent = params.sent;
       opts.log(`sending: effort ${sent.effort ?? "default (not sent)"}, thinking ${sent.thinking}`);
-      stopReason = await paintWithClaude(anthropic, mcp, t, params, opts);
+      stopReason = await paintWithClaude(anthropic, mcp, t, params, prompts, opts);
     }
   } finally {
     await mcp.close();
@@ -168,7 +171,7 @@ export async function paintScoped(anthropic: Anthropic | null, opts: PaintOption
   };
 }
 
-async function paintRandom(mcp: Client, t: Tracker, opts: PaintOptions): Promise<string> {
+async function paintRandom(mcp: Client, t: Tracker, prompts: Prompts, opts: PaintOptions): Promise<string> {
   while (t.active) {
     if (t.assignments >= opts.maxAssignments) return "max assignments reached";
     const assignment = await callTool(mcp, "get_assignment", {}, opts.log);
@@ -182,7 +185,7 @@ async function paintRandom(mcp: Client, t: Tracker, opts: PaintOptions): Promise
       const res = await callTool(
         mcp,
         "submit_stroke",
-        { token: meta.token, strokes, model: "random", prompt_hash: PROMPT_HASH },
+        { token: meta.token, strokes, model: "random", prompt_hash: prompts.hash },
         opts.log,
       );
       const result = firstJson(res.content as McpContent[]);
@@ -200,6 +203,7 @@ async function paintWithClaude(
   mcp: Client,
   t: Tracker,
   params: ModelParams,
+  prompts: Prompts,
   opts: PaintOptions,
 ): Promise<string> {
   const run = async (name: string, input: Record<string, unknown>) => {
@@ -210,7 +214,7 @@ async function paintWithClaude(
         effort: params.sent.effort ?? undefined,
         input_tokens: t.pendingIn,
         output_tokens: t.pendingOut,
-        prompt_hash: PROMPT_HASH,
+        prompt_hash: prompts.hash,
       });
       t.pendingIn = 0;
       t.pendingOut = 0;
@@ -242,7 +246,7 @@ async function paintWithClaude(
 
   const base = {
     ...requestFields(params),
-    system: SYSTEM_PROMPT,
+    system: prompts.system,
     cache_control: { type: "ephemeral" as const },
     tools,
     // Most API calls the tool runner makes for one assignment.
@@ -255,7 +259,7 @@ async function paintWithClaude(
   const runAssignment = async (): Promise<string | null> => {
     const runner = anthropic.beta.messages.toolRunner({
       ...base,
-      messages: [{ role: "user", content: ASSIGNMENT_TURN }],
+      messages: [{ role: "user", content: prompts.turn }],
     });
     let last: BetaMessage | null = null;
     const before = t.strokes;

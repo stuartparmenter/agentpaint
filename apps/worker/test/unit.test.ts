@@ -91,7 +91,9 @@ describe("stroke", () => {
 describe("created paintings", () => {
   test("settings default sensibly and reject bad values", () => {
     const parsed = createInput.parse({ style: "landscape" });
-    expect(parsed).toMatchObject({ size: "full", strokes_per_assignment: 1 });
+    expect(parsed).toMatchObject({ size: "full", strokes_per_assignment: 1, allow_finish: true });
+    expect(createInput.parse({ style: "landscape", allow_finish: false }).allow_finish).toBe(false);
+    expect(createInput.safeParse({ style: "landscape", allow_finish: "no" }).success).toBe(false);
     expect(createInput.safeParse({ style: "watercolor" }).success).toBe(false);
     expect(createInput.safeParse({ style: "landscape", strokes_per_assignment: 0 }).success).toBe(false);
     expect(createInput.safeParse({ style: "landscape", max_strokes: 5000 }).success).toBe(false);
@@ -181,6 +183,7 @@ describe("reference tests", () => {
       seriesId: "s1",
       size: "study",
       strokesPerAssignment: 1,
+      allowFinish: true,
       reference: "krita-sunset",
       blankScore: 0.75,
       meanColorScore: 0.88,
@@ -199,6 +202,20 @@ describe("reference tests", () => {
       [250, 2],
       [30, 1],
     ]);
+  });
+
+  test("runs differing only in whether the agent can end the painting early are separate conditions", () => {
+    const runs = [
+      run({ id: "a" }),
+      run({ id: "b", allowFinish: false }),
+      run({ id: "c", allowFinish: false }),
+    ];
+    expect(conditions(runs).map((c) => [c.allowFinish, c.runs])).toEqual([
+      [false, 2],
+      [true, 1],
+    ]);
+    const key = conditionKey(runs[0] as PaintingSummary);
+    expect(selectRuns(runs, { condition: key }).paintings.map((p) => p.id)).toEqual(["a"]);
   });
 
   test("selects the requested condition, else the largest, within a series", () => {

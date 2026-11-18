@@ -12,6 +12,8 @@ export const createInput = z.object({
   size: z.enum(Object.keys(SIZES) as [SizeName, ...SizeName[]]).default("full"),
   max_strokes: z.number().int().min(1).max(MAX_STROKES_LIMIT).optional(),
   strokes_per_assignment: z.number().int().min(1).max(MAX_STROKES_LIMIT).default(1),
+  /** Whether the agent can end the painting before its stroke budget is used. */
+  allow_finish: z.boolean().default(true),
   series: z.string().regex(SERIES_ID).optional(),
   series_key: z.string().regex(KEY).optional(),
 });

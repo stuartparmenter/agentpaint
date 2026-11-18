@@ -37,8 +37,32 @@ const SCOPED_INSTRUCTIONS =
   "image is shown until they are used. Then call get_assignment for the next assignment. " +
   "metadata.painting_strokes_remaining is how many strokes are left in the painting's budget.";
 
+const submitStrokeInput = z.object({
+  token: z.string().max(64).describe("The token from get_assignment"),
+  stroke_data: strokeInput.optional().describe("A single stroke"),
+  note: z.string().max(NOTE_MAX).optional().describe("One line on what the single stroke is for (optional)"),
+  strokes: z
+    .array(batchStrokeInput)
+    .max(MAX_BATCH)
+    .optional()
+    .describe("A batch of strokes, applied in order"),
+  finished: z.boolean().optional().describe("End the painting after these strokes"),
+  model: z.string().regex(MODEL_ID).optional().describe("Your model id, if you know it (optional)"),
+  effort: z.string().max(20).optional(),
+  input_tokens: z.number().int().min(0).max(1e9).optional(),
+  output_tokens: z.number().int().min(0).max(1e9).optional(),
+  prompt_hash: z.string().max(128).optional(),
+});
+
+/**
+ * submit_stroke's input on a painting the agent can't end early: no `finished`.
+ * Other properties pass through, so a `finished` sent anyway reaches the
+ * painting, which rejects it.
+ */
+const submitStrokeInputWithoutFinish = submitStrokeInput.omit({ finished: true }).loose();
+
 /** The MCP server for one painting's endpoint (/mcp/p/<id>). */
-function buildScopedServer(env: Env, paintingId: string): McpServer {
+function buildScopedServer(env: Env, paintingId: string, allowFinish: boolean): McpServer {
   const server = new McpServer(
     { name: "agentpaint", version: "0.1.0" },
     { instructions: SCOPED_INSTRUCTIONS },
@@ -87,32 +111,16 @@ function buildScopedServer(env: Env, paintingId: string): McpServer {
         `up to the assignment's assignment_strokes_remaining, at most ${MAX_BATCH}). Coordinates and brush size ` +
         "are in canvas pixels. " +
         "A batch is validated as a whole before any of it is applied; a rejection names the index of the first " +
-        "invalid stroke and leaves the token usable. finished: true ends the painting after these strokes (the " +
-        "stroke budget is a ceiling). model, effort, input_tokens, output_tokens and prompt_hash are optional " +
-        "self-reported details recorded with the strokes.",
-      inputSchema: z.object({
-        token: z.string().max(64).describe("The token from get_assignment"),
-        stroke_data: strokeInput.optional().describe("A single stroke"),
-        note: z
-          .string()
-          .max(NOTE_MAX)
-          .optional()
-          .describe("One line on what the single stroke is for (optional)"),
-        strokes: z
-          .array(batchStrokeInput)
-          .max(MAX_BATCH)
-          .optional()
-          .describe("A batch of strokes, applied in order"),
-        finished: z.boolean().optional().describe("End the painting after these strokes"),
-        model: z.string().regex(MODEL_ID).optional().describe("Your model id, if you know it (optional)"),
-        effort: z.string().max(20).optional(),
-        input_tokens: z.number().int().min(0).max(1e9).optional(),
-        output_tokens: z.number().int().min(0).max(1e9).optional(),
-        prompt_hash: z.string().max(128).optional(),
-      }),
+        "invalid stroke and leaves the token usable. " +
+        (allowFinish
+          ? "finished: true ends the painting after these strokes (the stroke budget is a ceiling). "
+          : "") +
+        "model, effort, input_tokens, output_tokens and prompt_hash are optional self-reported details recorded " +
+        "with the strokes.",
+      inputSchema: allowFinish ? submitStrokeInput : submitStrokeInputWithoutFinish,
       annotations: ANNOTATIONS,
     },
-    async (args) => {
+    async (args: z.infer<typeof submitStrokeInputWithoutFinish> & { finished?: unknown }) => {
       const parsed = parseToken(args.token);
       if (!parsed || parsed.paintingId !== paintingId) {
         return text({ applied: false, applied_count: 0, reason: "invalid_token" }, true);
@@ -130,7 +138,7 @@ function buildScopedServer(env: Env, paintingId: string): McpServer {
       }
       const strokes = args.strokes ?? (args.stroke_data ? [{ ...args.stroke_data, note: args.note }] : []);
       const result = await painting().submit(parsed.secret, strokes, {
-        finished: args.finished,
+        finished: args.finished === true,
         model: args.model,
         effort: args.effort,
         inputTokens: args.input_tokens,
@@ -148,10 +156,11 @@ export function handleScopedMcp(
   request: Request,
   env: Env,
   paintingId: string,
+  allowFinish: boolean,
   parsedBody: unknown,
 ): Promise<Response> {
   // JSON responses, no sessions: a server is built for each request.
-  const handler = createMcpHandler(() => buildScopedServer(env, paintingId), {
+  const handler = createMcpHandler(() => buildScopedServer(env, paintingId, allowFinish), {
     responseMode: "json",
     onerror: (e) => console.error("mcp error", e),
   });

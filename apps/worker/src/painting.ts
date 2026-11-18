@@ -14,6 +14,7 @@ import {
 } from "./config";
 import { constantTimeEqual, makeToken, randomId, sha256Hex, TOKEN_SECRET_LENGTH } from "./ids";
 import { Canvas, resetRenderer, validateStroke } from "./renderer";
+import { addAllowFinishColumn } from "./schema";
 import { type BatchStrokeInput, checkBounds, maxBrushSize, normalize } from "./stroke";
 import type { PaintingStats, PaintingStatus, PaintingSummary } from "./types";
 
@@ -111,6 +112,7 @@ interface Meta extends Record<string, SqlStorageValue> {
   created_at: number;
   finished_at: number | null;
   strokes_per_assignment: number;
+  allow_finish: number;
   reference: string | null;
   agent_key_hash: string;
   owner_key_hash: string;
@@ -169,6 +171,7 @@ export class Painting extends DurableObject<Env> {
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    addAllowFinishColumn(this.sql, "meta");
   }
 
   /** Create the painting's state from its registry entry (idempotent). */
@@ -178,7 +181,7 @@ export class Painting extends DurableObject<Env> {
       id TEXT PRIMARY KEY, style TEXT NOT NULL, prompt TEXT,
       width INTEGER NOT NULL, height INTEGER NOT NULL, max_strokes INTEGER NOT NULL,
       status TEXT NOT NULL, version INTEGER NOT NULL, created_at INTEGER NOT NULL, finished_at INTEGER,
-      strokes_per_assignment INTEGER NOT NULL, reference TEXT,
+      strokes_per_assignment INTEGER NOT NULL, allow_finish INTEGER NOT NULL, reference TEXT,
       agent_key_hash TEXT NOT NULL, owner_key_hash TEXT NOT NULL, assignments INTEGER NOT NULL DEFAULT 0
     )`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS strokes (
@@ -193,8 +196,8 @@ export class Painting extends DurableObject<Env> {
     this.sql.exec("CREATE TABLE IF NOT EXISTS reference (grid BLOB NOT NULL)");
     this.sql.exec(
       `INSERT INTO meta (id, style, prompt, width, height, max_strokes, status, version, created_at,
-        strokes_per_assignment, reference, agent_key_hash, owner_key_hash)
-       VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?)`,
+        strokes_per_assignment, allow_finish, reference, agent_key_hash, owner_key_hash)
+       VALUES (?, ?, ?, ?, ?, ?, 'active', 0, ?, ?, ?, ?, ?, ?)`,
       summary.id,
       summary.style,
       summary.prompt,
@@ -203,6 +206,7 @@ export class Painting extends DurableObject<Env> {
       summary.maxStrokes,
       summary.createdAt,
       summary.strokesPerAssignment,
+      summary.allowFinish ? 1 : 0,
       summary.reference,
       created.agentKeyHash,
       created.ownerKeyHash,
@@ -223,9 +227,14 @@ export class Painting extends DurableObject<Env> {
     });
   }
 
-  /** Check the painting's agent key. */
-  async verifyAgentKey(key: string): Promise<boolean> {
-    return this.keyMatches(this.meta()?.agent_key_hash, key);
+  /**
+   * Check the painting's agent key. Returns the settings its MCP server is built
+   * from, or null when `key` isn't the agent key.
+   */
+  async verifyAgentKey(key: string): Promise<{ allowFinish: boolean } | null> {
+    const meta = this.meta();
+    if (!meta || !(await this.keyMatches(meta.agent_key_hash, key))) return null;
+    return { allowFinish: meta.allow_finish === 1 };
   }
 
   /** End the painting early, given its owner key. */
@@ -578,6 +587,15 @@ export class Painting extends DurableObject<Env> {
     if (count > allowed) {
       return {
         ...reject("too_many_strokes", `This token allows ${allowed} more stroke(s) in one submission.`),
+        assignment_strokes_remaining: token.remaining,
+      };
+    }
+    if (finishing && meta.allow_finish !== 1) {
+      return {
+        ...reject(
+          "invalid_stroke",
+          "This painting can't be ended early: it ends when its stroke budget is used. Submit without finished.",
+        ),
         assignment_strokes_remaining: token.remaining,
       };
     }

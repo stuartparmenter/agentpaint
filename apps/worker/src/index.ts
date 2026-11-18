@@ -260,12 +260,13 @@ async function scoped(c: AppContext, id: string, key: string | undefined) {
   const ip = c.req.header("CF-Connecting-IP") ?? "local";
   const client = await c.env.SCOPED_CLIENT_LIMITER.limit({ key: `${ip}:${id}` });
   if (!client.success) return rateLimited(c);
-  if (!(await c.env.PAINTING.getByName(id).verifyAgentKey(key))) return unauthorized(c);
+  const settings = await c.env.PAINTING.getByName(id).verifyAgentKey(key);
+  if (!settings) return unauthorized(c);
   const painting = await c.env.SCOPED_LIMITER.limit({ key: id });
   if (!painting.success) return rateLimited(c);
   const parsed = await rpcBody(c);
   if (parsed instanceof Response) return parsed;
-  return handleScopedMcp(c.req.raw, c.env, id, parsed.body);
+  return handleScopedMcp(c.req.raw, c.env, id, settings.allowFinish, parsed.body);
 }
 app.all("/mcp/p/:id/:key", scopedLimit, (c) => scoped(c, c.req.param("id"), c.req.param("key")));
 app.all("/mcp/p/:id", scopedLimit, (c) =>

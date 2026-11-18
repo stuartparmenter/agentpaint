@@ -99,7 +99,8 @@ function goWith(key, value) {
 }
 
 function conditionLabel(c) {
-  return `${capitalize(c.style)} · ${c.size} ${c.width}×${c.height} · ${c.maxStrokes} strokes · ${plural(c.runs, "run")}`;
+  const finishing = c.allowFinish ? "" : " · no finishing";
+  return `${capitalize(c.style)} · ${c.size} ${c.width}×${c.height} · ${c.maxStrokes} strokes${finishing} · ${plural(c.runs, "run")}`;
 }
 
 const selectedCondition = (data) => data.conditions.find((c) => c.key === data.condition) ?? null;
@@ -400,13 +401,14 @@ function renderCharts(data, cells, colors, models, settings, max) {
   );
 }
 
-/** The test-mode create form, prefilled with the selected condition. */
+/** The test-mode create form, prefilled with the selected condition (or the reference's style). */
 function startPanel(data, condition) {
   const test = {
     reference: data.reference.id,
-    style: condition?.style ?? "landscape",
+    style: condition?.style ?? data.reference.style,
     size: condition?.size ?? "study",
     max_strokes: condition?.maxStrokes,
+    allow_finish: condition?.allowFinish ?? true,
   };
   return el("section", { className: "panel start-run" }, [
     el("h2", { textContent: "Start a run" }),
