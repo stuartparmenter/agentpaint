@@ -5,7 +5,11 @@
 //   bun src/matrix.ts --url http://127.0.0.1:8787 \
 //     --models claude-haiku-4-5,claude-sonnet-5-5,claude-opus-5-5 --per-assignment 1,20,all \
 //     --reference krita-sunset --size study --repeat 2 --parallel 3
+//
+// --join .matrix/<series>.json adds the paintings to that file's series instead
+// of starting a new one, and appends their keys to the file.
 
+import { resolve } from "node:path";
 import { parseArgs } from "node:util";
 import Anthropic from "@anthropic-ai/sdk";
 import { EFFORTS, type Effort } from "./capabilities";
@@ -17,7 +21,8 @@ import { thinkingLog } from "./thinking-log";
 
 const { values: args } = parseArgs({
   options: {
-    url: { type: "string", default: "http://127.0.0.1:8787" },
+    url: { type: "string" },
+    join: { type: "string" },
     models: { type: "string", default: "claude-opus-5-5" },
     "per-assignment": { type: "string", default: "1,20,all" },
     style: { type: "string" },
@@ -38,7 +43,9 @@ const { values: args } = parseArgs({
 if (args.help) {
   console.log(`Usage: matrix [options]
 
-  --url            site origin (default http://127.0.0.1:8787)
+  --url            site origin (default: the --join file's, else http://127.0.0.1:8787)
+  --join           a keys file (.matrix/<series>.json, relative to the repository root): add the
+                   paintings to its series and its file
   --models         comma-separated model ids (ignored with --random)
   --per-assignment strokes per assignment, comma-separated; "all" = the whole budget in one assignment
                    (default 1,20,all)
@@ -56,7 +63,20 @@ if (args.help) {
   process.exit(0);
 }
 
-const origin = args.url.replace(/\/$/, "");
+interface KeysFile {
+  origin: string;
+  series_id: string;
+  series_key: string;
+  paintings: Json[];
+}
+// `bun run matrix` runs in tools/painter; keys files are under the repository root.
+const repoRoot = new URL("../../../", import.meta.url).pathname;
+const joinFile = args.join ? resolve(repoRoot, args.join) : null;
+const joined = joinFile ? (JSON.parse(await Bun.file(joinFile).text()) as KeysFile) : null;
+const origin = (args.url ?? joined?.origin ?? "http://127.0.0.1:8787").replace(/\/$/, "");
+if (joined && joined.origin.replace(/\/$/, "") !== origin) {
+  fail(`${joinFile} holds a series on ${joined.origin}, not ${origin}`);
+}
 const effort = (args.effort ?? null) as Effort | null;
 if (effort !== null && !EFFORTS.includes(effort)) fail(`--effort must be one of ${EFFORTS.join(", ")}`);
 const repeat = positiveInt(args.repeat, "--repeat");
@@ -130,13 +150,16 @@ async function create(settings: Record<string, unknown>) {
   }
 }
 
+if (joined) console.log(`Joining series ${joined.series_id} (${joined.paintings.length} paintings so far)`);
 console.log(
   `Matrix: ${models.length} model(s) x ${perAssignment.length} strokes-per-assignment setting(s) x ${repeat} = ${cells.length} paintings; ` +
     `${style.name}, ${size}, budget ${budget}, ${allowFinish ? "agent can end early" : "no finishing"}, ` +
     `effort ${effort ?? "default"}, prompts ${prompts.hash}`,
 );
 
-let series: { id: string; key: string } | null = null;
+let series: { id: string; key: string } | null = joined
+  ? { id: joined.series_id, key: joined.series_key }
+  : null;
 for (const cell of cells) {
   const body = await create({
     style: style.name,
@@ -154,29 +177,26 @@ for (const cell of cells) {
   cell.ownerKey = body.owner_key;
 }
 if (!series) fail("no paintings created");
-// The paintings' keys, for finishing or verifying them later (tooling/replay-check.ts --keys).
-const keysDir = new URL("../../../.matrix/", import.meta.url);
-const keysFile = new URL(`${series.id}.json`, keysDir);
-await Bun.write(
-  keysFile,
-  JSON.stringify(
-    {
-      origin,
-      series_id: series.id,
-      series_key: series.key,
-      paintings: cells.map((c) => ({
-        id: c.id,
-        model: c.model,
-        strokes_per_assignment: c.strokesPerAssignment,
-        mcp_url: c.mcpUrl,
-        owner_key: c.ownerKey,
-      })),
-    },
-    null,
-    2,
-  ),
-);
-console.log(`Keys saved to ${keysFile.pathname}`);
+// The series' keys, for joining, verifying (tooling/replay-check.ts --keys) or
+// deleting (tooling/delete-paintings.ts) its paintings later.
+const keysFile = joinFile ?? resolve(repoRoot, `.matrix/${series.id}.json`);
+const keys: KeysFile = {
+  origin,
+  series_id: series.id,
+  series_key: series.key,
+  paintings: [
+    ...(joined?.paintings ?? []),
+    ...cells.map((c) => ({
+      id: c.id,
+      model: c.model,
+      strokes_per_assignment: c.strokesPerAssignment,
+      mcp_url: c.mcpUrl,
+      owner_key: c.ownerKey,
+    })),
+  ],
+};
+await Bun.write(keysFile, JSON.stringify(keys, null, 2));
+console.log(`Keys saved to ${keysFile}`);
 
 const anthropic = args.random ? null : new Anthropic();
 const queue = [...cells];

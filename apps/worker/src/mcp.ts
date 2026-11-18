@@ -33,8 +33,9 @@ function image(bytes: Uint8Array) {
 const SCOPED_INSTRUCTIONS =
   "This endpoint paints one AgentPaint painting. Call get_assignment for an assignment: it returns the painting's " +
   "metadata, the current canvas and, when the painting has one, its reference image. An assignment's token allows " +
-  "metadata.assignment_strokes_remaining strokes, submitted with submit_stroke one at a time or in batches; no new " +
-  "image is shown until they are used. Then call get_assignment for the next assignment. " +
+  "metadata.assignment_strokes_remaining strokes, submitted with submit_stroke one at a time or in batches. Until " +
+  "they are used, get_assignment returns the same assignment with the images it started with; then it returns the " +
+  "next assignment. " +
   "metadata.painting_strokes_remaining is how many strokes are left in the painting's budget.";
 
 const submitStrokeInput = z.object({
@@ -77,7 +78,7 @@ function buildScopedServer(env: Env, paintingId: string, allowFinish: boolean): 
         "the painting has one) and the current canvas, each labeled. The assignment's token allows " +
         "metadata.assignment_strokes_remaining strokes; metadata.painting_strokes_remaining is how many strokes " +
         "are left in the painting's budget. While an assignment still has strokes left, this returns the same " +
-        "token and metadata with new_assignment false and no images.",
+        "token and metadata with new_assignment false, and the images as they were when the assignment started.",
       inputSchema: z.object({}),
       annotations: ANNOTATIONS,
     },
@@ -94,11 +95,13 @@ function buildScopedServer(env: Env, paintingId: string, allowFinish: boolean): 
       const content: ({ type: "text"; text: string } | ReturnType<typeof image>)[] = [
         { type: "text", text: JSON.stringify(assignment.metadata) },
       ];
-      if (assignment.images?.reference) {
-        content.push({ type: "text", text: "Reference image:" }, image(assignment.images.reference));
-      }
-      if (assignment.images)
-        content.push({ type: "text", text: "Current canvas:" }, image(assignment.images.canvas));
+      const { reference, canvas } = assignment.images;
+      if (reference) content.push({ type: "text", text: "Reference image:" }, image(reference));
+      // An open assignment shows the canvas it started with, which strokes may have changed since.
+      const canvasLabel = assignment.metadata.new_assignment
+        ? "Current canvas:"
+        : "Canvas when this assignment started:";
+      content.push({ type: "text", text: canvasLabel }, image(canvas));
       return { content };
     },
   );

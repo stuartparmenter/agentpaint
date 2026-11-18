@@ -39,6 +39,33 @@ function jpegSize(b64: string) {
   return { signature, width: 0, height: 0 };
 }
 
+function decode(b64: string | undefined): Uint8Array | null {
+  return b64 ? Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)) : null;
+}
+
+/** The body of a GET, or null when it isn't 200. */
+async function fetchBytes(path: string): Promise<Uint8Array | null> {
+  const res = await fetch(`${base}${path}`);
+  return res.ok ? new Uint8Array(await res.arrayBuffer()) : null;
+}
+
+function sameBytes(a: Uint8Array | null, b: Uint8Array | null) {
+  return !!a && !!b && a.length === b.length && a.every((x, i) => x === b[i]);
+}
+
+/** The text labels and image kinds of a get_assignment result, in order. */
+function contentKinds(content: McpContent[]) {
+  return content.map((c) => (c.type === "text" ? (c.text?.startsWith("{") ? "meta" : c.text) : c.type));
+}
+
+/** The images of a get_assignment result: the reference (when there is one), then the canvas. */
+function assignmentImages(content: McpContent[]) {
+  const images = content.filter((c) => c.type === "image").map((c) => decode(c.data));
+  return { reference: images.length === 2 ? (images[0] ?? null) : null, canvas: images.at(-1) ?? null };
+}
+
+const OPEN_KINDS = ["meta", "Reference image:", "image", "Canvas when this assignment started:", "image"];
+
 function bigStroke(meta: { canvas_width: number; canvas_height: number }, y: number) {
   return {
     points: [
@@ -123,9 +150,7 @@ check(
 
 const first = await scopedCall(client, "get_assignment");
 const meta = first.json;
-const firstKinds = first.content.map((c) =>
-  c.type === "text" ? (c.text?.startsWith("{") ? "meta" : c.text) : c.type,
-);
+const firstKinds = contentKinds(first.content);
 check(
   "a new assignment without a reference shows only the canvas",
   JSON.stringify(firstKinds) === JSON.stringify(["meta", "Current canvas:", "image"]),
@@ -243,9 +268,7 @@ check("another painting's agent key doesn't open this endpoint", otherKey.status
 
 const scopedClient = await connect(new URL(p.mcp_url));
 const assignment1 = await scopedCall(scopedClient, "get_assignment");
-const kinds = assignment1.content.map((c) =>
-  c.type === "text" ? (c.text?.startsWith("{") ? "meta" : c.text) : c.type,
-);
+const kinds = contentKinds(assignment1.content);
 check(
   "a new assignment shows the labeled reference and canvas",
   JSON.stringify(kinds) === JSON.stringify(["meta", "Reference image:", "image", "Current canvas:", "image"]),
@@ -276,12 +299,16 @@ check(
 );
 
 const sameAssignment = await scopedCall(scopedClient, "get_assignment");
+const sameImages = assignmentImages(sameAssignment.content);
+const firstImages = assignmentImages(assignment1.content);
 check(
-  "while an assignment has strokes left, get_assignment returns the same token without images",
+  "while an assignment has strokes left, get_assignment returns the same token and the images it started with",
   sameAssignment.json?.token === m1.token &&
     sameAssignment.json?.new_assignment === false &&
-    sameAssignment.content.every((c) => c.type === "text"),
-  sameAssignment.json,
+    JSON.stringify(contentKinds(sameAssignment.content)) === JSON.stringify(OPEN_KINDS) &&
+    sameBytes(sameImages.reference, firstImages.reference) &&
+    sameBytes(sameImages.canvas, firstImages.canvas),
+  contentKinds(sameAssignment.content),
 );
 
 const halfBad = await scopedCall(scopedClient, "submit_stroke", {
@@ -338,6 +365,25 @@ check(
     applied2.json?.painting_strokes_remaining === m1.max_strokes - 2,
   applied2.json,
 );
+// A new MCP session (a new agent) on the half-used assignment sees its starting
+// view: the blank canvas at version 0, not the two strokes painted since.
+const resumed = await connect(new URL(p.mcp_url));
+const resumedAssignment = await scopedCall(resumed, "get_assignment");
+await resumed.close();
+const resumedImages = assignmentImages(resumedAssignment.content);
+const blankStart = await fetchBytes(`/api/paintings/${p.id}/v/0`);
+check(
+  "a repeat get_assignment after some strokes shows the canvas from the assignment's start (v0), not the current one",
+  resumedAssignment.json?.token === m1.token &&
+    resumedAssignment.json?.new_assignment === false &&
+    resumedAssignment.json?.stroke_count === 2 &&
+    JSON.stringify(contentKinds(resumedAssignment.content)) === JSON.stringify(OPEN_KINDS) &&
+    sameBytes(resumedImages.canvas, blankStart) &&
+    !sameBytes(resumedImages.canvas, await fetchBytes(`/api/paintings/${p.id}/v/2`)) &&
+    sameBytes(resumedImages.reference, await fetchBytes(`/api/paintings/${p.id}/reference`)),
+  contentKinds(resumedAssignment.content),
+);
+
 const overAllowance = await scopedCall(scopedClient, "submit_stroke", {
   token: m1.token,
   strokes: [studyStroke(60, 160), studyStroke(60, 200)],
@@ -439,6 +485,44 @@ check(
   "the stroke log replays to the stored snapshot",
   verified.fromScratch === true && verified.version === 4,
   verified,
+);
+
+// --- An assignment that starts after earlier strokes -----------------------------
+
+const later = await create({ style: "landscape", size: "study", max_strokes: 6, strokes_per_assignment: 3 });
+const laterClient = await connect(new URL(later.body.mcp_url));
+const laterFirst = (await scopedCall(laterClient, "get_assignment")).json;
+await scopedCall(laterClient, "submit_stroke", {
+  token: laterFirst.token,
+  strokes: [studyStroke(20, 40), studyStroke(40, 120), studyStroke(60, 160)],
+});
+const laterSecond = await scopedCall(laterClient, "get_assignment");
+await scopedCall(laterClient, "submit_stroke", {
+  token: laterSecond.json.token,
+  stroke_data: studyStroke(200, 200),
+});
+await laterClient.close();
+const laterResumed = await connect(new URL(later.body.mcp_url));
+const laterRepeat = await scopedCall(laterResumed, "get_assignment");
+await laterResumed.close();
+const laterCanvas = assignmentImages(laterRepeat.content).canvas;
+check(
+  "an open assignment that started at stroke 3 shows the v3 snapshot, not the v4 canvas",
+  laterRepeat.json?.token === laterSecond.json.token &&
+    laterRepeat.json?.new_assignment === false &&
+    laterRepeat.json?.stroke_count === 4 &&
+    JSON.stringify(contentKinds(laterRepeat.content)) ===
+      JSON.stringify(["meta", "Canvas when this assignment started:", "image"]) &&
+    sameBytes(laterCanvas, await fetchBytes(`/api/paintings/${later.body.id}/v/3`)) &&
+    !sameBytes(laterCanvas, await fetchBytes(`/api/paintings/${later.body.id}/v/4`)),
+  contentKinds(laterRepeat.content),
+);
+check(
+  "a new assignment's canvas is the current one",
+  sameBytes(
+    assignmentImages(laterSecond.content).canvas,
+    await fetchBytes(`/api/paintings/${later.body.id}/v/3`),
+  ),
 );
 
 // --- A painting the agent can't end early ---------------------------------------
@@ -649,6 +733,68 @@ const keyHolder = await connect(new URL(target.body.mcp_url), undefined, {
 const ownerAssignment = await scopedCall(keyHolder, "get_assignment");
 check("the agent key still works for its own client", !!ownerAssignment.json?.token, ownerAssignment.json);
 await keyHolder.close();
+
+// --- Owner delete -------------------------------------------------------------------
+
+const kept = await create({ style: "landscape", reference: "krita-sunset", size: "study", max_strokes: 5 });
+const doomed = await create({
+  style: "landscape",
+  reference: "krita-sunset",
+  size: "study",
+  max_strokes: 5,
+  series: kept.body.series_id,
+  series_key: kept.body.series_key,
+});
+for (const made of [kept.body, doomed.body]) {
+  const c = await connect(new URL(made.mcp_url));
+  const a = (await scopedCall(c, "get_assignment")).json;
+  await scopedCall(c, "submit_stroke", { token: a.token, stroke_data: studyStroke(20, 40) });
+  await c.close();
+}
+const ownerCall = (id: string, key: string, method: string, path = "") =>
+  fetch(`${base}/api/paintings/${id}${path}`, { method, headers: { Authorization: `Bearer ${key}` } });
+const beforeDelete = (await (
+  await ownerCall(doomed.body.id, doomed.body.owner_key, "POST", "/verify")
+).json()) as Json;
+check(
+  "the painting to delete has a stored snapshot of its stroke",
+  beforeDelete.version === 1 && beforeDelete.fromScratch === true,
+  beforeDelete,
+);
+const wrongDelete = await ownerCall(doomed.body.id, "C".repeat(32), "DELETE");
+check("delete with a wrong key is unauthorized", wrongDelete.status === 401, wrongDelete.status);
+const agentDelete = await ownerCall(doomed.body.id, doomed.body.agent_key, "DELETE");
+check("delete with the agent key is unauthorized", agentDelete.status === 401, agentDelete.status);
+const ownerDelete = await ownerCall(doomed.body.id, doomed.body.owner_key, "DELETE");
+check("the owner key deletes the painting", ownerDelete.status === 200, ownerDelete.status);
+const gone = await Promise.all(
+  ["", "/strokes", "/v/0", "/v/1", "/reference"].map(
+    async (path) => [path, (await fetch(`${base}/api/paintings/${doomed.body.id}${path}`)).status] as const,
+  ),
+);
+check(
+  "a deleted painting's summary, strokes, snapshots and reference are 404",
+  gone.every(([, status]) => status === 404),
+  gone,
+);
+const deletedMcp = await fetch(doomed.body.mcp_url, { method: "POST", body: "{}" });
+check("a deleted painting's MCP endpoint is unauthorized", deletedMcp.status === 401, deletedMcp.status);
+const deleteAgain = await ownerCall(doomed.body.id, doomed.body.owner_key, "DELETE");
+check("deleting it again is unauthorized", deleteAgain.status === 401, deleteAgain.status);
+const keptSeries = (await (await fetch(`${base}/api/series/${kept.body.series_id}`)).json()) as Json;
+check(
+  "the series lists only the painting that was kept",
+  JSON.stringify(keptSeries.paintings?.map((x: Json) => x.id)) === JSON.stringify([kept.body.id]),
+  keptSeries.paintings?.map((x: Json) => x.id),
+);
+const keptTests = (await (
+  await fetch(`${base}/api/tests/krita-sunset?series=${kept.body.series_id}`)
+).json()) as Json;
+check(
+  "the reference test lists only the painting that was kept",
+  JSON.stringify(keptTests.paintings?.map((x: Json) => x.id)) === JSON.stringify([kept.body.id]),
+  keptTests.paintings?.map((x: Json) => x.id),
+);
 
 const isHtml = (res: Response) =>
   res.status === 200 && (res.headers.get("content-type") ?? "").includes("text/html");

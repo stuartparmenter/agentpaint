@@ -177,6 +177,12 @@ app.post("/api/paintings/:id/finish", (c) =>
   asOwner(c, async (painting, key) => ((await painting.finishByOwner(key)) ? { finished: true } : null)),
 );
 
+// Owner-only: delete the painting and everything stored for it. Edge-cached GETs
+// of it can still be served until they expire.
+app.delete("/api/paintings/:id", (c) =>
+  asOwner(c, async (painting, key) => ((await painting.deleteByOwner(key)) ? { deleted: true } : null)),
+);
+
 // Owner-only check that the stroke log replays to the stored snapshot.
 app.post("/api/paintings/:id/verify", (c) => asOwner(c, (painting, key) => painting.verifyReplay(key)));
 

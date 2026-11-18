@@ -153,7 +153,9 @@ export async function paintScoped(anthropic: Anthropic | null, opts: PaintOption
       if (!anthropic) throw new Error("painting with Claude needs an Anthropic client");
       const params = await paramsFor(anthropic, opts.model, opts.effort, opts.thinkingBudget);
       sent = params.sent;
-      opts.log(`sending: effort ${sent.effort ?? "default (not sent)"}, thinking ${sent.thinking}`);
+      opts.log(
+        `sending: max_tokens ${params.max_tokens}, effort ${sent.effort ?? "default (not sent)"}, thinking ${sent.thinking}`,
+      );
       stopReason = await paintWithClaude(anthropic, mcp, t, params, prompts, opts);
     }
   } finally {
@@ -251,6 +253,8 @@ async function paintWithClaude(
     tools,
     // Most API calls the tool runner makes for one assignment.
     max_iterations: 40,
+    // Replies are streamed: the SDK refuses unstreamed requests with a large max_tokens.
+    stream: true as const,
     // Plain Messages API behavior on every model generation.
     thread: false as const,
   };
@@ -264,14 +268,23 @@ async function paintWithClaude(
     let last: BetaMessage | null = null;
     const before = t.strokes;
     const thinking: string[] = [];
-    for await (const message of runner) {
-      t.noteMessage(message);
-      last = message;
-      for (const block of message.content) {
-        if (block.type === "thinking" && block.thinking.trim()) thinking.push(block.thinking.trim());
+    // Leaving this loop early (a return or an exception) closes the runner, which
+    // aborts the reply it is streaming.
+    for await (const stream of runner) {
+      try {
+        const message = await stream.finalMessage();
+        t.noteMessage(message);
+        last = message;
+        for (const block of message.content) {
+          if (block.type === "thinking" && block.thinking.trim()) thinking.push(block.thinking.trim());
+        }
+        if (message.stop_reason === "refusal")
+          return `refusal: ${message.stop_details?.category ?? "unknown"}`;
+        if (message.stop_reason === "max_tokens") opts.log("reply hit max_tokens");
+      } finally {
+        // Ends a reply that wasn't read to the end; a finished one is unaffected.
+        stream.abort();
       }
-      if (message.stop_reason === "refusal") return `refusal: ${message.stop_details?.category ?? "unknown"}`;
-      if (message.stop_reason === "max_tokens") opts.log("reply hit max_tokens");
     }
     if (thinking.length) {
       opts.log(`thinking: ${thinking[0]?.split("\n")[0]?.slice(0, 200)}`);

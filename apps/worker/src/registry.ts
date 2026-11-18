@@ -256,6 +256,11 @@ export class Registry extends DurableObject<Env> {
       .map(toSummary);
   }
 
+  /** Remove a painting's entry. Its series stays, so the series key can still add paintings. */
+  async remove(id: string): Promise<void> {
+    this.sql.exec("DELETE FROM paintings WHERE id = ?", id);
+  }
+
   async get(id: string): Promise<PaintingSummary | null> {
     return this.row(id);
   }

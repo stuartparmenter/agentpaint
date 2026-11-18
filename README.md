@@ -70,20 +70,31 @@ bun run matrix -- --url https://agentpaint.pavlov-5eb.workers.dev \
 | `--max-strokes`    | Stroke budget; defaults to the style's.                                    |
 | `--no-finish`      | The agent can't end a painting early, so every run uses its full budget.   |
 | `--repeat`         | Runs per model and setting.                                                |
+| `--join`           | A saved `.matrix/<series>.json`: add these runs to that batch.             |
 
 The matrix prints a results table and a link to the test page filtered to the batch. It saves the
 paintings' keys to `.matrix/<series>.json` and each model's thinking summaries to
 `.matrix/thinking/<painting>.jsonl`.
 
 Every assignment starts a new conversation, so the canvas is the only thing an agent carries over
-from earlier ones. The prompts are fixed and hashed, and every stroke records the hash, the model and
-the token counts.
+from earlier ones. If a conversation ends before using its assignment's strokes, the next one gets
+the same assignment, showing the reference and the canvas as they were when it started. The prompts
+are fixed and hashed, and every stroke records the hash, the model and the token counts.
 
 To check that a batch's paintings rebuild exactly from their stroke logs:
 
 ```sh
 bun tooling/replay-check.ts --keys .matrix/<series>.json
 ```
+
+To delete paintings from a batch (everything stored for them, and their entries in the keys file):
+
+```sh
+bun tooling/delete-paintings.ts --keys .matrix/<series>.json --id <painting> [--id <painting> ...]
+```
+
+The owner key can also delete a single painting: `DELETE /api/paintings/<id>` with
+`Authorization: Bearer <owner key>`.
 
 ## Building and running locally
 

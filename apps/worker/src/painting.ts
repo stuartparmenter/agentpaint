@@ -14,11 +14,14 @@ import {
 } from "./config";
 import { constantTimeEqual, makeToken, randomId, sha256Hex, TOKEN_SECRET_LENGTH } from "./ids";
 import { Canvas, resetRenderer, validateStroke } from "./renderer";
-import { addAllowFinishColumn } from "./schema";
+import { addAllowFinishColumn, addStartVersionColumn } from "./schema";
 import { type BatchStrokeInput, checkBounds, maxBrushSize, normalize } from "./stroke";
 import type { PaintingStats, PaintingStatus, PaintingSummary } from "./types";
 
-/** What a new assignment shows: the canvas, and the reference when the painting has one. */
+/**
+ * What an assignment shows: the canvas as it was when the assignment was handed
+ * out, and the reference when the painting has one.
+ */
 export interface AssignmentImages {
   reference: Uint8Array | null;
   canvas: Uint8Array;
@@ -29,8 +32,7 @@ export type AssignmentMetadata = Record<string, string | number | boolean | null
 
 export interface Assignment {
   token: string;
-  /** Null when this returns an assignment that is still open (no new image until its strokes are used). */
-  images: AssignmentImages | null;
+  images: AssignmentImages;
   metadata: AssignmentMetadata;
 }
 
@@ -123,6 +125,8 @@ interface TokenRow extends Record<string, SqlStorageValue> {
   secret: string;
   /** The painting version the token's next stroke must apply to. */
   version: number;
+  /** The painting version when the assignment was handed out. */
+  start_version: number;
   /** When the assignment was handed out. */
   created_at: number;
   expires_at: number;
@@ -130,16 +134,21 @@ interface TokenRow extends Record<string, SqlStorageValue> {
   assignment: number;
 }
 
+/** Every R2 object of a painting has a key under this prefix. */
+function objectPrefix(paintingId: string) {
+  return `paintings/${paintingId}/`;
+}
+
 export function snapshotKey(paintingId: string, version: number) {
-  return `paintings/${paintingId}/v${version}.jpg`;
+  return `${objectPrefix(paintingId)}v${version}.jpg`;
 }
 
 export function referenceKey(paintingId: string) {
-  return `paintings/${paintingId}/reference.jpg`;
+  return `${objectPrefix(paintingId)}reference.jpg`;
 }
 
 function checkpointKey(paintingId: string) {
-  return `paintings/${paintingId}/checkpoint.apb`;
+  return `${objectPrefix(paintingId)}checkpoint.apb`;
 }
 
 /**
@@ -151,7 +160,8 @@ function checkpointKey(paintingId: string) {
  * doesn't exist (e.g. forged tokens) leave nothing behind.
  *
  * Assignments are rationed: an assignment's token allows `strokes_per_assignment`
- * strokes, and no new image is shown until they are used.
+ * strokes, and no new image is shown until they are used. Until then the
+ * assignment shows the canvas it started with.
  */
 export class Painting extends DurableObject<Env> {
   private sql: SqlStorage;
@@ -172,6 +182,7 @@ export class Painting extends DurableObject<Env> {
     super(ctx, env);
     this.sql = ctx.storage.sql;
     addAllowFinishColumn(this.sql, "meta");
+    addStartVersionColumn(this.sql);
   }
 
   /** Create the painting's state from its registry entry (idempotent). */
@@ -190,8 +201,9 @@ export class Painting extends DurableObject<Env> {
       input_tokens INTEGER, output_tokens INTEGER, prompt_hash TEXT
     )`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS tokens (
-      secret TEXT PRIMARY KEY, version INTEGER NOT NULL, created_at INTEGER NOT NULL,
-      expires_at INTEGER NOT NULL, remaining INTEGER NOT NULL, assignment INTEGER NOT NULL
+      secret TEXT PRIMARY KEY, version INTEGER NOT NULL, start_version INTEGER NOT NULL,
+      created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, remaining INTEGER NOT NULL,
+      assignment INTEGER NOT NULL
     )`);
     this.sql.exec("CREATE TABLE IF NOT EXISTS reference (grid BLOB NOT NULL)");
     this.sql.exec(
@@ -245,6 +257,36 @@ export class Painting extends DurableObject<Env> {
   }
 
   /**
+   * Delete the painting, given its owner key: its registry entry, every R2 object
+   * under its prefix (snapshots, reference, checkpoint) and this object's storage,
+   * which includes its alarm. Returns false when `key` isn't the owner key.
+   */
+  async deleteByOwner(key: string): Promise<boolean> {
+    const meta = this.meta();
+    if (!meta || !(await this.keyMatches(meta.owner_key_hash, key))) return false;
+    // Stop new strokes, and let requests in progress finish, so none of their R2
+    // writes lands after the objects are deleted.
+    this.sql.exec("UPDATE meta SET status = 'done'");
+    this.sql.exec("UPDATE tokens SET remaining = 0");
+    while (this.inflight > 0) await new Promise((resolve) => setTimeout(resolve, 50));
+    this.unload();
+    // Storage goes last: until then the owner key still works, so a failed delete can be retried.
+    await this.env.REGISTRY.getByName("registry").remove(meta.id);
+    const prefix = objectPrefix(meta.id);
+    for (;;) {
+      const page = await this.env.SNAPSHOTS.list({ prefix });
+      if (page.objects.length) await this.env.SNAPSHOTS.delete(page.objects.map((o) => o.key));
+      if (!page.truncated) break;
+    }
+    await this.ctx.storage.deleteAll();
+    this.checkpointVersion = 0;
+    this.v0Stored = false;
+    this.referenceGrid = null;
+    this.referenceJpeg = null;
+    return true;
+  }
+
+  /**
    * An assignment on the painting, `Unavailable` when it can't be painted, or null when
    * it was never created.
    */
@@ -266,8 +308,9 @@ export class Painting extends DurableObject<Env> {
       this.sql.exec("DELETE FROM tokens WHERE expires_at < ?", now - TOKEN_TTL_MS);
 
       // Rationing: while the current assignment still has strokes, hand back the same
-      // token without a new image. Anyone calling get_assignment gets it, so a
-      // lost token never blocks the painting.
+      // token with the images it started with, never a newer canvas. Anyone calling
+      // get_assignment gets it, so a lost token never blocks the painting, and an
+      // agent that missed the start still sees what the assignment is about.
       const open = this.sql
         .exec<TokenRow>(
           `SELECT * FROM tokens WHERE remaining > 0 AND expires_at > ? AND version = ?
@@ -277,10 +320,11 @@ export class Painting extends DurableObject<Env> {
         )
         .toArray()[0];
       if (open) {
+        const metadata = this.metadata(meta, open, false);
         return {
           token: makeToken(meta.id, open.secret),
-          images: null,
-          metadata: this.metadata(meta, open, false),
+          images: await this.images(meta, await this.canvasAt(meta, open.start_version)),
+          metadata,
         };
       }
 
@@ -289,26 +333,24 @@ export class Painting extends DurableObject<Env> {
       const token: TokenRow = {
         secret: randomId(TOKEN_SECRET_LENGTH),
         version: meta.version,
+        start_version: meta.version,
         created_at: now,
         expires_at: now + assignmentTtlMs(allowance),
         remaining: allowance,
         assignment: number,
       };
       this.sql.exec(
-        "INSERT INTO tokens (secret, version, created_at, expires_at, remaining, assignment) VALUES (?, ?, ?, ?, ?, ?)",
+        `INSERT INTO tokens (secret, version, start_version, created_at, expires_at, remaining, assignment)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         ...Object.values(token),
       );
       this.sql.exec("UPDATE meta SET assignments = ?", number);
 
       const canvas = this.latestImage;
+      const metadata = this.metadata({ ...meta, assignments: number }, token, true);
       // The gallery's history starts at v0; retry it if init couldn't store it.
       if (meta.version === 0 && !this.v0Stored) this.v0Stored = await this.putSnapshot(meta.id, 0, canvas);
-      const reference = meta.reference ? await this.loadReferenceJpeg(meta.id) : null;
-      return {
-        token: makeToken(meta.id, token.secret),
-        images: { reference, canvas },
-        metadata: this.metadata({ ...meta, assignments: number }, token, true),
-      };
+      return { token: makeToken(meta.id, token.secret), images: await this.images(meta, canvas), metadata };
     });
   }
 
@@ -533,7 +575,7 @@ export class Painting extends DurableObject<Env> {
       assignment: token.assignment,
       strokes_per_assignment: meta.strokes_per_assignment,
       assignment_strokes_remaining: token.remaining,
-      // false: this assignment was already open; no new image until its strokes are used.
+      // false: this assignment was already open; its images are the ones it started with.
       new_assignment: newAssignment,
       has_reference: meta.reference !== null,
     };
@@ -627,6 +669,28 @@ export class Painting extends DurableObject<Env> {
       if (object) this.referenceJpeg = new Uint8Array(await object.arrayBuffer());
     }
     return this.referenceJpeg;
+  }
+
+  /** An assignment's images: `canvas`, and the reference when the painting has one. */
+  private async images(meta: Meta, canvas: Uint8Array): Promise<AssignmentImages> {
+    const reference = meta.reference ? await this.loadReferenceJpeg(meta.id) : null;
+    return { reference, canvas };
+  }
+
+  /**
+   * The canvas image at `version`: the loaded canvas when it is at that version,
+   * else its stored snapshot. A snapshot missing from R2 is rebuilt from the
+   * stroke log and stored.
+   */
+  private async canvasAt(meta: Meta, version: number): Promise<Uint8Array> {
+    if (version === meta.version && this.latestImage) return this.latestImage;
+    const stored = await this.env.SNAPSHOTS.get(snapshotKey(meta.id, version));
+    if (stored) return new Uint8Array(await stored.arrayBuffer());
+    const canvas = new Canvas(meta.width, meta.height);
+    const image = this.replayOnto(canvas, version);
+    canvas.free();
+    await this.putSnapshot(meta.id, version, image);
+    return image;
   }
 
   /** Send the registry this painting's current results (absolute values). */

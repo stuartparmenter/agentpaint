@@ -23,11 +23,15 @@ type Capabilities = {
   thinking?: Leaf & { types?: { adaptive?: Leaf; enabled?: Leaf } };
 };
 
+/** max_tokens when the Models API doesn't give the model's own limit. */
+const FALLBACK_MAX_TOKENS = 16000;
+
 const cache = new Map<string, Promise<ModelParams>>();
 
 /**
- * Parameters for `model` at `effort`. Adaptive thinking where supported, else
- * extended thinking with `thinkingBudget` tokens where supported. Effort is sent
+ * Parameters for `model` at `effort`. max_tokens is the model's own output limit
+ * (FALLBACK_MAX_TOKENS when it can't be read). Adaptive thinking where supported,
+ * else extended thinking with `thinkingBudget` tokens where supported. Effort is sent
  * only when one is given and the model supports that level; otherwise the model
  * runs at its default effort. Unknown capabilities send neither.
  */
@@ -43,11 +47,11 @@ export function paramsFor(client: Anthropic, model: string, effort: Effort | nul
 
 async function resolve(client: Anthropic, model: string, effort: Effort | null, thinkingBudget: number) {
   let caps: Capabilities = {};
-  let maxOutput = 16000;
+  let maxOutput = FALLBACK_MAX_TOKENS;
   try {
     const info = await client.models.retrieve(model);
     caps = (info as unknown as { capabilities?: Capabilities }).capabilities ?? {};
-    maxOutput = Math.min(maxOutput, (info as unknown as { max_tokens?: number }).max_tokens ?? maxOutput);
+    maxOutput = info.max_tokens ?? FALLBACK_MAX_TOKENS;
   } catch (e) {
     console.warn(
       `could not read capabilities for ${model}; sending no effort or thinking settings (${String(e)})`,

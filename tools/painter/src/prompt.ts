@@ -8,7 +8,7 @@ import { createHash } from "node:crypto";
 
 const SYSTEM_BEFORE_ENDING = `You paint on an AgentPaint canvas through two tools.
 
-get_assignment gives you an assignment on the painting. A new assignment returns the painting's metadata, then the reference image (when the painting has one) and the current canvas, each labeled. metadata.assignment_strokes_remaining is how many strokes this assignment still allows; metadata.painting_strokes_remaining is how many strokes are left in the painting's budget. While assignment_strokes_remaining is above zero, get_assignment returns the same token and metadata with new_assignment false and no images.
+get_assignment gives you an assignment on the painting. A new assignment returns the painting's metadata, then the reference image (when the painting has one) and the current canvas, each labeled. metadata.assignment_strokes_remaining is how many strokes this assignment still allows; metadata.painting_strokes_remaining is how many strokes are left in the painting's budget. While assignment_strokes_remaining is above zero, get_assignment returns the same token and metadata with new_assignment false, and the images as they were when the assignment started.
 
 submit_stroke paints with the assignment's token: stroke_data for one stroke, or strokes for several at once (up to assignment_strokes_remaining, at most 50 per call). Each reply gives the updated assignment_strokes_remaining and painting_strokes_remaining. Strokes apply in the order given. Give each stroke a note: one line saying what it is for.
 
